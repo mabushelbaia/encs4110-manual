@@ -1,0 +1,26 @@
+# LaTeX build artifacts
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.lof
+*.lot
+*.maf
+*.mtc
+*.mtc0
+build/
+svg-inkscape/
+
+# Generated PDFs (published on the `pdf` branch instead)
+encs4110_*.pdf
+main.pdf
+exp_standalone.pdf
+
+# Output worktree of the `pdf` branch (created via: git worktree add dist pdf)
+dist/
+
+# Local backup copy of the manual PDFs
+manual/
