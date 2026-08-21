@@ -47,7 +47,7 @@ Hardware timers are specialized peripherals that count clock cycles and generate
     Bit width & 24-bit & 16-bit or 32-bit \\
     Max period @ 50MHz & ~335 ms & 32-bit: ~86 seconds \\
     Use case & OS ticks, simple delays & Complex timing, PWM, capture \\
-    Availability & Built into ARM Cortex-M core & 6-12 on TM4C123 \\
+    Availability & Built into ARM Cortex-M core & 12 on TM4C123 (6 GPTM + 6 wide) \\
     \bottomrule
   \end{tabular}
   \caption{Choosing Between SysTick and GPTM}
@@ -96,7 +96,7 @@ T = \frac{(\text{TAILR} + 1) \times (\text{TAPR} + 1)}{f_{\text{SysClk}}}
 \]
 
 \noindent
-The prescaler is ignored in 32-bit mode. For example, with \texttt{TAPR = 255} (divisor = 256), the effective clock frequency is reduced to $50\,\text{MHz} / 256 \approx 195.3\,\text{kHz}$.
+This formula holds for down-counting mode, which is what this experiment uses. In count-up mode, the prescaler instead extends the counter range rather than dividing the clock. The prescaler is ignored in 32-bit mode. For example, with \texttt{TAPR = 255} (divisor = 256), the effective clock frequency is reduced to $50\,\text{MHz} / 256 \approx 195.3\,\text{kHz}$.
 
 \subsubsection{Interrupt Handling}
 
@@ -127,7 +127,7 @@ The SysTick timer is a 24-bit down-counter that is part of the ARM Cortex-M4 cor
 Beyond the generic down-counter/reload/interrupt behavior described in \textit{Timer Fundamentals} above, SysTick specifically offers:
 \begin{itemize}[nosep]
   \item \textbf{24-bit width}: shorter maximum period than a 32-bit GPTM, in exchange for being built into the core (no clock-gating setup needed).
-  \item \textbf{Clock source selection}: Can use the processor clock or an external reference clock.
+  \item \textbf{Clock source selection}: Can use the processor clock (system clock) or PIOSC divided by 4.
   \item \textbf{CMSIS support}: The CMSIS library provides a simple \texttt{SysTick\_Config()} function for easy setup.
 \end{itemize}
 
@@ -150,9 +150,9 @@ The \texttt{CTRL} register controls the SysTick timer operation and provides sta
 \centering
 \begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~ENABL~}}]{16}
 \bitheader[lsb=16]{16-31} \\
-\bitbox{15}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{COUNTFLAG}} \\
+\bitbox{15}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{COUNT}} \\
 \bitheader{0-15} \\
-\bitbox{13}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{CLKSOURCE}} & \bitbox{1}{\miniscule{TICKINT}} & \bitbox{1}{\miniscule{ENABLE}}
+\bitbox{13}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{SRC}} & \bitbox{1}{\miniscule{INT}} & \bitbox{1}{\miniscule{ENABLE}}
 \end{bytefield}
 \caption{SysTick CTRL Register}
 \end{figure}
@@ -172,8 +172,8 @@ The \texttt{CTRL} register controls the SysTick timer operation and provides sta
     \end{itemize}
   \item \textbf{Bit 2 (CLKSOURCE)}: Clock source selection
     \begin{itemize}[nosep]
-      \item 0 = External reference clock
-      \item 1 = Processor clock (typical)
+      \item 0 = PIOSC divided by 4 (precision internal oscillator / 4)
+      \item 1 = Processor (system) clock (typical)
     \end{itemize}
   \item \textbf{Bit 16 (COUNTFLAG)}: Counter reached zero since last read (read-only)
     \begin{itemize}[nosep]
@@ -199,7 +199,7 @@ The \texttt{LOAD} register holds the value that is loaded into the counter when 
 \end{figure}
 
 \noindent
-\textbf{RELOAD Field (Bits 23:0):} The value to load into the counter. Valid range: \texttt{0x000001} to \texttt{0xFFFFFF}. Writing zero disables the counter.
+\textbf{RELOAD Field (Bits 23:0):} The value to load into the counter. Valid range: \texttt{0x000001} to \texttt{0xFFFFFF}. Writing zero has no effect: the COUNT flag and interrupt are only activated when counting from 1 to 0. The counter is enabled/disabled via the ENABLE bit in CTRL, not through RELOAD.
 \bigskip
 \subsubsection*{SysTick Current Value Register (STCURRENT)}
 
@@ -316,7 +316,7 @@ In 32-bit mode, Timer A operates as a full 32-bit timer, and Timer B is not avai
 
 \subsubsection{GPTM Configuration Registers}
 
-Every \texttt{TIMERx->}\emph{reg} reference below is a \texttt{Base + offset} access, the same pattern used for GPIO in Experiment 4. \texttt{RCGCTIMER} (\texttt{0x400FE604}) gates the clock to each module — bits 0-5 enable \texttt{TIMER0-TIMER5}, bits 16-21 enable \texttt{WTIMER0-WTIMER5} — and must be set before touching a module's registers.
+Every \texttt{TIMERx->}\emph{reg} reference below is a \texttt{Base + offset} access, the same pattern used for GPIO in Experiment 4. Standard timers are clock-gated by \texttt{RCGCTIMER} (\texttt{0x400FE604}, bits 0-5 for \texttt{TIMER0-TIMER5}); wide timers have their own gating register, \texttt{RCGCWTIMER} (\texttt{0x400FE65C}, bits 0-5 for \texttt{WTIMER0-WTIMER5}). The appropriate bit must be set before touching a module's registers.
 
 \begin{table}[H]
 \centering
@@ -457,7 +457,7 @@ The \texttt{TAPR} register extends the timer range in 16-bit mode by providing a
 \begin{itemize}[nosep]
   \item Prescaler value: \texttt{0x00} to \texttt{0xFF} (0 to 255)
   \item Only used in 16-bit mode; ignored in 32-bit mode
-  \item Effective divisor: \texttt{TAPSR + 1}
+  \item Effective divisor: \texttt{TAPSR + 1} in down-count mode (in count-up mode it extends the counter range instead)
 \end{itemize}
 
 \bigskip
@@ -556,7 +556,7 @@ T_{\text{max}} = \frac{2^{32}}{50{,}000{,}000} = \frac{4{,}294{,}967{,}296}{50{,
 \bigskip
 \subsubsection*{16-bit Mode (With Prescaler)}
 
-In 16-bit mode, the prescaler extends the timer range:
+In 16-bit mode, the prescaler extends the timer range (down-count mode):
 
 \[
 T = \frac{(\text{TAILR} + 1) \times (\text{TAPR} + 1)}{f_{\text{clock}}}
@@ -710,7 +710,7 @@ This example configures TIMER1 in 16-bit periodic mode with maximum prescaler to
   \item \texttt{TIMER1->CFG = 0x4;} selects 16-bit mode.
   \item \texttt{TIMER1->TAMR = 0x02;} configures periodic mode (count down).
   \item \texttt{TIMER1->TAPR = 256 - 1;} sets prescaler to maximum (divisor = 256).
-  \item \texttt{TIMER1->TAILR = 65536 - 1;} sets interval load to maximum (65536).
+  \item \texttt{TIMER1->TAILR = 65536 - 1;} writes 65535 (\texttt{0xFFFF}, the 16-bit maximum).
   \item Period: $T = \frac{65536 \times 256}{50{,}000{,}000} \approx 0.335$ seconds.
   \item \texttt{NVIC->ISER[0] |= (1<<21);} enables TIMER1A interrupt (IRQ 21).
   \item \texttt{TIMER1A\_Handler()} toggles the blue LED and clears the interrupt flag.
