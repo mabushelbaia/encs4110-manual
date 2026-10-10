@@ -365,18 +365,25 @@ Start with \texttt{R0 = 0x12345678}. Perform the following operations and observ
 \end{itemize}
 \emph{Hint:} Use \texttt{BIC}, \texttt{ORR}, and \texttt{EOR} with appropriate masks.  
 
-\subsubsection{Task 2 --- Addressing Modes with an Array}
-Given:
+\subsubsection{Task 2 --- Temperature Conversion}
+Convert between Fahrenheit and Celsius using values stored in memory:
+\[
+C = \frac{5\,(F - 32)}{9} \qquad\qquad F = \frac{9\,C}{5} + 32
+\]
+Start from the following data definitions:
 \begin{lstlisting}
-ARRAY   DCD  0x11, 0x22, 0x33, 0x44
-OUT     SPACE 16
-\end{lstlisting}
+        AREA    CONSTANTS, DATA, READONLY
+TEMP_F  DCD     70              ; input temperature in Fahrenheit
+TEMP_C  DCD     22              ; input temperature in Celsius
 
-Load each element using a different addressing mode, then store to \texttt{OUT}:
+        AREA    MYDATA, DATA, READWRITE
+OUT_C   DCD     0               ; TEMP_F converted to Celsius
+OUT_F   DCD     0               ; TEMP_C converted to Fahrenheit
+\end{lstlisting}
 \begin{itemize}[nosep]
-    \item 0x11 via \emph{immediate offset}
-    \item 0x22 via \emph{pre-indexed}       
-    \item 0x33 via \emph{post-indexed}       
-    \item 0x44 via \emph{register offset}   
+    \item Load both inputs from memory into registers.
+    \item Compute both conversions using \texttt{SUB}, \texttt{MUL}, \texttt{SDIV}, and \texttt{ADD}.
+    \item Store the results in \texttt{OUT\_C} and \texttt{OUT\_F}, and verify them in the Memory window.
+    \item Change \texttt{TEMP\_F} to \texttt{-40} and run again (the result should also be $-40$). Explain why the program must use \texttt{SDIV} rather than \texttt{UDIV}.
 \end{itemize}
-\emph{Hint:} Put \texttt{ARRAY}'s base in \texttt{R1} (e.g., \texttt{LDR R1, =ARRAY}). Verify \texttt{OUT} in memory after execution.
+\emph{Hint:} Integer division truncates, so multiply \emph{before} you divide. For $F = 70$, computing $(F-32)/9$ first gives $38/9 = 4$ and then $5 \times 4 = 20$, instead of the better answer $190/9 = 21$.

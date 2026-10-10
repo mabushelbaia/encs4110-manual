@@ -29,7 +29,7 @@ on `PATH` (the `svg` package shells out to it to render the SVG figures, e.g.
 the Birzeit logo). Build everything with `make`:
 
 ```sh
-make all      # every experiment (1-9) + the full manual -> dist/
+make all      # every experiment (1-10) + the full manual -> dist/
 make manual   # just the full manual -> dist/encs4110_manual.pdf
 make 5        # just one standalone experiment -> dist/encs4110_5.pdf
 make clean    # remove generated PDFs and LaTeX aux files

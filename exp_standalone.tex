@@ -5,7 +5,7 @@
 \input{preamble}
 
 % --- Defaults (override on the command line if you like) ---
-% Expect: \def\EXPNUM{<1..9>} passed from CLI.
+% Expect: \def\EXPNUM{<1..10>} passed from CLI.
 \providecommand{\EXPNUM}{1}
 
 % University meta (fall back to your usual defaults if not already defined)
@@ -22,7 +22,7 @@
 
 % --- Compute 2-digit string and chapter include path ---
 \makeatletter
-% 2-digit experiment code: 01..09
+% 2-digit experiment code: 01..10
 \edef\ExpTwoDigit{\ifnum\EXPNUM<10 0\fi\EXPNUM}
 % The chapter file to include, e.g. chapters/exp01
 \edef\ExpInputPath{chapters/exp\ExpTwoDigit}
@@ -32,7 +32,8 @@
   \ifcase\EXPNUM
     \or Assembly Basics and Program Structure%
     \or Data Processing and Memory Operations%
-    \or Control Flow and Subroutines%
+    \or Branching and Loops%
+    \or Procedures and the Stack%
     \or Microcontroller Architecture and GPIO Output%
     \or GPIO Inputs and Interrupt Handling%
     \or Hardware Timers and Timing Control%

@@ -1,676 +1,750 @@
-\chapter{Hardware Timers and Timing Control}
+\chapter{GPIO Inputs and Interrupt Handling}
 
 \section*{Learning Objectives}
 After completing this experiment, you will be able to:
 \begin{itemize}[nosep]
-  \item Understand the role and limitations of the SysTick timer in the ARM Cortex-M4 core.
-  \item Configure the SysTick timer for periodic interrupts and precise timing.
-  \item Understand the architecture and capabilities of General-Purpose Timer Modules (GPTM).
-  \item Configure GPTM in 16-bit and 32-bit modes for periodic and one-shot operation.
-  \item Calculate timer periods using prescalers and reload values.
-  \item Implement timer-based debouncing for mechanical switches.
-  \item Use multiple timers to control independent timing tasks.
+  \item Configure GPIO inputs with digital enable and internal pull resistors.
+  \item Read switches via polling with software debouncing.
+  \item Configure edge-triggered GPIO interrupts and write minimal ISRs.
+  \item Enable and manage interrupts in the NVIC (IRQ mapping, ISER).
+  \item Unlock and configure protected pins (PF0/NMI) for general-purpose use.
 \end{itemize}
 
+
 \section*{Experiment Overview}
-This experiment introduces precise timing control using the TM4C123's SysTick timer and General-Purpose Timer Modules (GPTM). You will configure SysTick for periodic interrupts and millisecond timing, explore GPTM's 16-bit and 32-bit modes with prescalers, and implement multiple independent timing tasks. By the end of this lab, you will understand how to select and configure timers for different timing requirements and implement timer-based interrupt-driven applications.
+This experiment extends GPIO functionality to inputs and introduces interrupt-driven programming. You will configure GPIO pins to read mechanical switches using both polling and interrupt approaches, implement software debouncing techniques, write interrupt service routines, and enable GPIO interrupts in the NVIC. By the end of this lab, you will understand how to implement both polling and interrupt-driven input handling, and write responsive embedded applications that react to external events in real time.
 
 \newpage
 
 
-
-
 \section{Theoretical Background}
 
-\subsection{Introduction to Timers}
+\subsection{GPIO Input Configuration}
 
-Hardware timers are specialized peripherals that count clock cycles and generate events at precise intervals. Unlike software-based delays (which block the CPU and waste power), hardware timers run independently in the background and generate interrupts when they reach a predetermined count.
+In the previous experiment, GPIO pins were configured as outputs to control LEDs. In this experiment, we configure GPIO pins as \textbf{inputs} to read the state of external devices such as switches, buttons, and sensors.
 
-\paragraph*{Why Use Hardware Timers?}
+When a GPIO pin is configured as an input, the microcontroller reads the voltage level on the pin and interprets it as a logic '0' (low, typically 0V) or logic '1' (high, typically 3.3V). The pin's digital input buffer must be enabled, and the pin must be connected to a defined voltage level to avoid floating states.
 
+\subsubsection{Input Pin Requirements}
+
+For reliable digital input operation, three conditions must be met:
 \begin{itemize}[nosep]
-  \item \textbf{Precise timing}: Timers operate at the system clock frequency, providing microsecond-level accuracy
-  \item \textbf{Non-blocking}: The CPU can perform other tasks while the timer runs independently
-  \item \textbf{Power efficient}: Timers can wake the MCU from sleep mode
-  \item \textbf{Multiple independent channels}: Several timers can run simultaneously with different periods
-\end{itemize}
-
-\paragraph*{When to Use Each Timer}
-
-\begin{table}[H]
-  \centering
-  \small
-  \begin{tabular}{l l l}
-    \toprule
-    \textbf{Feature} & \textbf{SysTick} & \textbf{GPTM} \\
-    \midrule
-    Bit width & 24-bit & 16-bit or 32-bit \\
-    Max period @ 50MHz & ~335 ms & 32-bit: ~86 seconds \\
-    Use case & OS ticks, simple delays & Complex timing, PWM, capture \\
-    Availability & Built into ARM Cortex-M core & 12 on TM4C123 (6 GPTM + 6 wide) \\
-    \bottomrule
-  \end{tabular}
-  \caption{Choosing Between SysTick and GPTM}
-\end{table}
-
-\noindent
-For short delays (< 300 ms), SysTick is simpler. For longer delays or advanced features, use GPTM.
-
-\subsection{Timer Fundamentals}
-
-Understanding the basic operation of timers will help you configure them correctly and debug timing issues.
-
-\subsubsection{Down-Counting Operation}
-
-Both SysTick and GPTM timers operate as \textbf{down-counters} in their most common configuration (periodic mode):
-
-\begin{enumerate}[nosep]
-  \item \textbf{Load}: A reload value is written to the timer's load register (\texttt{LOAD} for SysTick, \texttt{TAILR} for GPTM)
-  \item \textbf{Count}: The timer counts down from the reload value to zero, decrementing once per clock cycle (or prescaled cycle)
-  \item \textbf{Timeout}: When the counter reaches zero:
-    \begin{itemize}[nosep]
-      \item The timeout flag is set
-      \item An interrupt is generated (if enabled and unmasked)
-      \item The counter automatically reloads from the load register (periodic mode) or stops (one-shot mode)
-    \end{itemize}
-  \item \textbf{Clear}: The interrupt handler must clear the timeout flag by writing to the interrupt clear register
-\end{enumerate}
-
-\subsubsection{Timer Modes}
-
-Timers can operate in different modes depending on the application:
-
-\begin{itemize}[nosep]
-  \item \textbf{Periodic Mode}: The timer automatically reloads and continues counting. Ideal for fixed-rate tasks like LED blinking, sampling sensors, or OS ticks.
-  \item \textbf{One-Shot Mode}: The timer counts down once and stops. Useful for timeouts, delays, or single events.
-  \item \textbf{Capture Mode}: (GPTM only) Captures the counter value when an external event occurs on a GPIO pin. Used for measuring pulse widths or frequencies.
-  \item \textbf{PWM Mode}: (GPTM only) Generates pulse-width modulated output signals for motor control, dimming LEDs, etc.
-\end{itemize}
-
-\subsubsection{Prescaler (16-bit Mode Only)}
-
-In 16-bit mode, GPTM provides an 8-bit prescaler (\texttt{TAPR}) that extends the timer range by dividing the input clock:
-
-\[
-T = \frac{(\text{TAILR} + 1) \times (\text{TAPR} + 1)}{f_{\text{SysClk}}}
-\]
-
-\noindent
-This formula holds for down-counting mode, which is what this experiment uses. In count-up mode, the prescaler instead extends the counter range rather than dividing the clock. The prescaler is ignored in 32-bit mode. For example, with \texttt{TAPR = 255} (divisor = 256), the effective clock frequency is reduced to $50\,\text{MHz} / 256 \approx 195.3\,\text{kHz}$.
-
-\subsubsection{Interrupt Handling}
-
-Every timer interrupt, regardless of which peripheral, follows the same four-step shape: enable it in the timer's own mask register, enable it in the NVIC (SysTick is the one exception — see the note in \textit{SysTick Configuration with CMSIS} below), implement the correctly-named ISR, and clear the flag inside the ISR. The step-by-step register sequence for each peripheral is given later in \textit{Configuration Workflow}; the general shape is:
-
-\begin{enumerate}[nosep]
-  \item \textbf{Enable the interrupt}: Set the appropriate bit in the timer's interrupt mask register (\texttt{IMR})
-  \item \textbf{Enable in NVIC}: Set the corresponding bit in the NVIC's \texttt{ISER} register
-  \item \textbf{Implement the ISR}: Write an interrupt service routine with the correct name (e.g., \texttt{SysTick\_Handler()}, \texttt{TIMER1A\_Handler()})
-  \item \textbf{Clear the flag}: Write 1 to the appropriate bit in the interrupt clear register (\texttt{ICR}) to acknowledge the interrupt
-\end{enumerate}
-
-\noindent
-\textbf{Best Practice}: Clear the interrupt flag early in the ISR to prevent missing subsequent interrupts:
-
-\begin{lstlisting}[language=C]
-void TIMER1A_Handler(void) {
-    TIMER1->ICR = (1 << 0);  // Clear TATOCINT flag immediately
-    // Perform minimal work: toggle GPIO, update counters, etc.
-}
-\end{lstlisting}
-\subsection{SysTick Timer}
-
-The SysTick timer is a 24-bit down-counter that is part of the ARM Cortex-M4 core. It is present in all Cortex-M processors and provides a standard, simple timing mechanism for operating systems and applications.
-
-\subsubsection{SysTick Features}
-
-Beyond the generic down-counter/reload/interrupt behavior described in \textit{Timer Fundamentals} above, SysTick specifically offers:
-\begin{itemize}[nosep]
-  \item \textbf{24-bit width}: shorter maximum period than a 32-bit GPTM, in exchange for being built into the core (no clock-gating setup needed).
-  \item \textbf{Clock source selection}: Can use the processor clock (system clock) or PIOSC divided by 4.
-  \item \textbf{CMSIS support}: The CMSIS library provides a simple \texttt{SysTick\_Config()} function for easy setup.
+  \item \textbf{Direction}: The pin must be configured as an input (bit cleared in \texttt{GPIODIR}).
+  \item \textbf{Digital Enable}: The digital input buffer must be enabled (bit set in \texttt{GPIODEN}).
+  \item \textbf{Defined Logic Level}: The pin must be connected to a valid logic level (not floating).
 \end{itemize}
 
 \noindent
-The SysTick timer is ideal for creating system ticks (e.g., 1 ms intervals for RTOS scheduling), implementing delays, and measuring time intervals. However, its 24-bit width limits the maximum period at high clock frequencies.
+If a pin is left floating (not connected to a defined voltage), it can pick up electrical noise and produce random or unstable readings. To prevent this, pins are typically connected to either power (\texttt{VCC}) or ground (\texttt{GND}) through a resistor, or the microcontroller's internal pull-up or pull-down resistors can be enabled.
 
-\subsubsection{SysTick Registers}
+\subsubsection{Pull-Up and Pull-Down Resistors}
+\label{sec:pull-resistors}
 
-The SysTick timer is controlled through three main registers:
-\bigskip
+Digital inputs must not be left floating: an undefined voltage can produce random logic reads. A pull resistor defines the idle (no-press) level of a switch input.
 
-\subsubsection*{SysTick Control and Status Register (STCTRL)}
+\paragraph{Pull-Up (active-low)}
+A \textbf{pull-up} connects the pin weakly to $V_{CC}$, so the idle level is logic~1. Pressing the switch drives the pin to GND $\rightarrow$ logic~0.
 
-\noindent\textbf{Register:} \texttt{SysTick->CTRL} — SysTick Control and Status (\texttt{0xE000E010})
+\paragraph{Pull-Down (active-high)}
+A \textbf{pull-down} connects the pin weakly to GND, so the idle level is logic~0. Pressing the switch drives the pin to $V_{CC}$ $\rightarrow$ logic~1.
 
-\noindent
-The \texttt{CTRL} register controls the SysTick timer operation and provides status information.
+
+\begin{figure}[H]
+    \centering
+    % Requires \usepackage{circuitikz}, \usepackage{amsmath}, \usepackage{subcaption}
+    \begin{circuitikz}[american, scale=0.95, transform shape,
+        % Define styles for clarity
+        input/.style={thick, ->},
+        state_high/.style={draw=black!60!black, thick},
+        state_low/.style={draw=black!60!black, thick}
+    ]
+
+    % --- Pull-Up Circuit (Left Subfigure) ---
+    \begin{scope}[shift={(0,0)}]
+        \draw[state_high] (0, 4) node[above] {$V_{CC}$} coordinate (VCC_PU)
+            to[R, l=$R_{PU}$] (0, 2.5) coordinate (Input_PU);
+
+        % Connection to MCU Input
+        \draw[input] (Input_PU) -- ++(1.5, 0) node[right] {$\substack{\text{MCU Input} \\ \text{(Default High)}}$};
+
+        % Switch to Ground (Active Low)
+        \draw (Input_PU) to[short, *-] (-1.5, 2.5) coordinate (SW_Top);
+        \draw[state_low] (SW_Top) to[nopb, l={SW}] (-1.5, 0) coordinate (SW_Bottom);
+        \draw (SW_Bottom) -- (0, 0) node[ground] {} node[below] {};
+
+        \node at (0, 5.2) {\textbf{A) Pull-Up Configuration}};
+    \end{scope}
+
+    % --- Pull-Down Circuit (Right Subfigure) ---
+    \begin{scope}[shift={(7,0)}]
+        \draw (0, 4) node[above] {$V_{CC}$} coordinate (VCC_PD);
+
+        % Switch to VCC (Active High)
+        \draw (VCC_PD) to[short, *-] (-1.5, 4) coordinate (SW_Top);
+        \draw[state_high] (SW_Top) to[nopb, l={SW}] (-1.5, 1.5) coordinate (SW_Bottom);
+
+        \draw (SW_Bottom) to[short, *-] (0, 1.5) coordinate (Input_PD);
+
+        % Resistor to Ground
+        \draw[state_low] (Input_PD) to[R, l_=$R_{PD}$] (0, 0) node[ground] {} node[below] {};
+
+        % Connection to MCU Input
+        \draw[input] (Input_PD) -- ++(1.5, 0) node[right] {$\substack{\text{MCU Input} \\ \text{(Default Low)}}$};
+
+        \node at (0, 5.2) {\textbf{B) Pull-Down Configuration}};
+    \end{scope}
+
+    \end{circuitikz}
+    \caption{Pull-Up and Pull-Down Resistor Configurations for Switch Inputs}
+    \label{fig:pull_circuits_improved}
+\end{figure}
+
+\paragraph{Internal Resistors (TM4C123)}
+TM4C123 GPIO pins include configurable \textbf{internal} pull resistors:
+\begin{itemize}[noitemsep, topsep=2pt]
+  \item \texttt{GPIOPUR} — Pull-Up Select (enable bit = pull-up on that pin)
+  \item \texttt{GPIOPDR} — Pull-Down Select (enable bit = pull-down on that pin)
+\end{itemize}
+Do not enable both on the same pin. On the LaunchPad, SW1 (PF4) and SW2 (PF0) short to GND when pressed, so enable \textbf{pull-ups} (\texttt{GPIOPUR}) to make them active-low (read 0 when pressed, 1 when released).
+
+\subsection{Switch Bouncing and Debouncing}
+
+When a mechanical switch or button is pressed or released, the metal contacts inside do not make or break contact cleanly. Instead, they \textbf{bounce} — rapidly making and breaking contact multiple times before settling into a stable state. This bouncing typically lasts 5-30 milliseconds.
 
 \begin{figure}[H]
 \centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~ENABL~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{15}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{COUNT}} \\
-\bitheader{0-15} \\
-\bitbox{13}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{SRC}} & \bitbox{1}{\miniscule{INT}} & \bitbox{1}{\miniscule{ENABLE}}
-\end{bytefield}
-\caption{SysTick CTRL Register}
+\begin{tikzpicture}[x=1cm,y=1cm,>=latex]
+  % Axes
+  \draw[->] (0,0) -- (12,0) node[right]{Time};
+  \draw[->] (0,0) -- (0,3) node[above]{Voltage};
+
+  % --- Ideal signal lane (upper) ---
+  % Levels for the upper lane
+  \def\HIGHU{2.6}
+  \def\LOWU{1.6}
+  % Ideal (no bounce)
+  \draw[thick, blue]
+    (0,\HIGHU) -- (2,\HIGHU)
+    -- (2,\LOWU)
+    -- (6,\LOWU)
+    -- (6,\HIGHU)
+    -- (11,\HIGHU);
+  \node[blue] at (9.5,2.85) {\scriptsize Ideal (No Bouncing)};
+  \node[blue, anchor=east] at (0,\HIGHU) {\scriptsize HIGH};
+  \node[blue, anchor=east] at (0,\LOWU) {\scriptsize LOW};
+
+  % --- Actual signal lane (lower) ---
+  % Levels for the lower lane
+  \def\HIGHL{1.1}
+  \def\LOWL{0.3}
+  % Actual with bounce (press and release)
+  \draw[thick, red]
+    (0,\HIGHL) -- (2,\HIGHL)
+    % Press bounce
+    -- (2,\LOWL)
+    -- (2.10,\HIGHL)
+    -- (2.20,\LOWL)
+    -- (2.30,\HIGHL)
+    -- (2.40,\LOWL)
+    -- (2.50,\HIGHL)
+    -- (2.60,\LOWL)
+    -- (6,\LOWL)
+    % Release bounce
+    -- (6,\HIGHL)
+    -- (6.10,\LOWL)
+    -- (6.20,\HIGHL)
+    -- (6.30,\LOWL)
+    -- (6.40,\HIGHL)
+    -- (6.50,\LOWL)
+    -- (6.60,\HIGHL)
+    -- (11,\HIGHL);
+  \node[red] at (9.2,1.35) {\scriptsize Actual (With Bouncing)};
+  \node[red, anchor=east] at (0,\HIGHL) {\scriptsize HIGH};
+  \node[red, anchor=east] at (0,\LOWL) {\scriptsize LOW};
+
+  % Bounce duration brackets
+  \draw[<->, dashed] (2,0.1) -- (2.6,0.1)
+    node[midway, below]{\scriptsize Bounce (5--20\,ms)};
+  \draw[<->, dashed] (6,0.1) -- (6.6,0.1)
+    node[midway, below]{\scriptsize Bounce (5--20\,ms)};
+
+  % Transition labels
+  \node[anchor=west] at (2,2.1) {\scriptsize Press};
+  \node[anchor=west] at (6,2.1) {\scriptsize Release};
+\end{tikzpicture}
+\caption{Mechanical Switch Bounce — Press and Release Both Exhibit Bouncing}
 \end{figure}
 
+
 \noindent
-\textbf{Key Bits} (names match the CMSIS \texttt{SysTick->CTRL} bit definitions you'll see in code):
+For applications that poll the input at a slow rate or only care about the final state, bouncing may not be a problem. However, for interrupt-driven systems or applications that count button presses, bouncing can cause multiple false triggers.
+
+\subsubsection{Debouncing Techniques}
+
+Two approaches can eliminate or mitigate switch bouncing:
+
+\paragraph{Hardware Debouncing}
+Add an RC (resistor-capacitor) filter circuit or a dedicated debouncing IC to the switch. The capacitor smooths out the voltage transitions, preventing bounces from reaching the microcontroller input.
+
+\paragraph{Software Debouncing}
+After detecting a button press (or release), wait for a short period (typically 10-50 ms) to allow the bouncing to settle, then read the input again to confirm the state. This can be implemented with:
 \begin{itemize}[nosep]
-  \item \textbf{Bit 0 (ENABLE)}: Enable/disable the SysTick timer
-    \begin{itemize}[nosep]
-      \item 0 = Timer disabled
-      \item 1 = Timer enabled
-    \end{itemize}
-  \item \textbf{Bit 1 (TICKINT)}: Enable SysTick interrupt
-    \begin{itemize}[nosep]
-      \item 0 = No interrupt when counter reaches zero
-      \item 1 = Generate interrupt when counter reaches zero
-    \end{itemize}
-  \item \textbf{Bit 2 (CLKSOURCE)}: Clock source selection
-    \begin{itemize}[nosep]
-      \item 0 = PIOSC divided by 4 (precision internal oscillator / 4)
-      \item 1 = Processor (system) clock (typical)
-    \end{itemize}
-  \item \textbf{Bit 16 (COUNTFLAG)}: Counter reached zero since last read (read-only)
-    \begin{itemize}[nosep]
-      \item 0 = Has not counted to zero
-      \item 1 = Has counted to zero (cleared on read)
-    \end{itemize}
-\end{itemize}
-\bigskip
-
-\subsubsection*{SysTick Reload Value Register (STLOAD)}
-\textbf{Register:} \texttt{SysTick->LOAD} — SysTick Reload Value (\texttt{0xE000E014})
-
-\noindent
-The \texttt{LOAD} register holds the value that is loaded into the counter when it reaches zero or when the timer is enabled.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=0.7em]{32}
-\bitheader{31,24,23,0} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{24}{RELOAD}
-\end{bytefield}
-\caption{SysTick LOAD Register — 24-bit Reload Value}
-\end{figure}
-
-\noindent
-\textbf{RELOAD Field (Bits 23:0):} The value to load into the counter. Valid range: \texttt{0x000001} to \texttt{0xFFFFFF}. Writing zero has no effect: the COUNT flag and interrupt are only activated when counting from 1 to 0. The counter is enabled/disabled via the ENABLE bit in CTRL, not through RELOAD.
-\bigskip
-\subsubsection*{SysTick Current Value Register (STCURRENT)}
-
-\noindent\textbf{Register:} \texttt{SysTick->VAL} — SysTick Current Value (\texttt{0xE000E018})
-
-\noindent
-The \texttt{VAL} register contains the current value of the SysTick counter.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=0.7em]{32}
-\bitheader{31,24,23,0} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{24}{CURRENT}
-\end{bytefield}
-\caption{SysTick VAL Register — Current Counter Value}
-\end{figure}
-
-\noindent
-\textbf{CURRENT Field (Bits 23:0):} Current counter value. Writing any value clears the counter to zero and clears the \texttt{COUNTFLAG} in \texttt{CTRL}.
-
-\subsubsection{SysTick Timing Calculation}
-
-The SysTick timer counts down from the \texttt{LOAD} value to zero. The period is determined by:
-
-\[
-T = \frac{\text{LOAD} + 1}{f_{\text{clock}}}
-\]
-
-\noindent
-where $f_{\text{clock}}$ is the processor clock frequency (typically 50 MHz on the TM4C123).
-
-\noindent
-
-
-\noindent
-\textbf{Maximum Period:} With a 24-bit counter at 50 MHz:
-\[
-T_{\text{max}} = \frac{2^{24}}{50{,}000{,}000} = \frac{16{,}777{,}216}{50{,}000{,}000} \approx 0.335 \text{ seconds}
-\]
-
-\noindent
-For longer periods, accumulate ticks in software or use the GPTM.
-
-\subsubsection{SysTick Configuration with CMSIS}
-
-The CMSIS library provides a convenient function to configure the SysTick timer:
-
-\begin{lstlisting}[caption={SysTick configuration using CMSIS}, language=C]
-// Configure SysTick for 1 ms interrupts at SystemCoreClock
-SysTick_Config(SystemCoreClock / 1000);  // 50,000 ticks = 1 ms period
-\end{lstlisting}
-
-\noindent
-This function:
-\begin{itemize}[nosep]
-  \item Sets the \texttt{LOAD} register to the specified value minus 1
-  \item Clears the \texttt{VAL} register
-  \item Sets \texttt{SysTick->CTRL} to enable the timer, its interrupt, and the processor clock source
-  \item Sets the SysTick exception priority to the lowest level via \texttt{NVIC\_SetPriority(SysTick\_IRQn, ...)}
+  \item \textbf{Blocking delay debouncing}: Insert a fixed delay (busy-wait loop) after detecting an edge, then verify the input state. This is simple but prevents the CPU from doing other work during the delay period.
+  \item \textbf{Timer-based debouncing (non-blocking)}: Use a hardware timer to sample the input periodically without blocking the main program. Only register a press after multiple consistent readings across timer intervals.
 \end{itemize}
 
 \noindent
-\textbf{Note:} SysTick is a core \emph{exception}, not a numbered peripheral interrupt — unlike GPIO or GPTM interrupts, it is never enabled through \texttt{NVIC->ISER}. Its enable bit lives in \texttt{SysTick->CTRL} itself, and its priority (there's no separate enable/disable) is set via \texttt{SCB->SHPR3}, which \texttt{NVIC\_SetPriority()} writes to on your behalf.
+The polling example below is kept deliberately simple and does \emph{not} debounce — it reads the raw switch state every loop iteration so you can first see how polling works on its own. Task 1 asks you to add delay-based debouncing to it. More sophisticated timer-based debouncing techniques will be covered in the following experiment.
+
+\subsection{Reading GPIO Inputs: Polling vs. Interrupts}
+
+There are two fundamental approaches to reading digital inputs:
+
+\subsubsection{Polling (Continuous Checking)}
+
+In polling, the CPU continuously reads the input pin in a loop and checks whether the state has changed. This is simple to implement but has drawbacks:
+
+\begin{itemize}[nosep]
+  \item \textbf{CPU Usage}: The CPU is busy checking the input even when nothing is happening.
+  \item \textbf{Latency}: The response time depends on how frequently the loop runs.
+  \item \textbf{Power Consumption}: The CPU cannot enter low-power sleep modes while polling.
+\end{itemize}
 
 \noindent
-The SysTick interrupt handler is named \texttt{SysTick\_Handler()}:
+Polling is suitable for simple applications where the CPU has nothing else to do or when inputs change slowly.
 
-\begin{lstlisting}[language=C]
-void SysTick_Handler(void) {
-    // Called every 1 ms
-    // Increment global counter, toggle LED, etc.
+\begin{lstlisting}[caption={Polling Example (Conceptual)}, language=C]
+while (1) {
+    if (button is pressed) {
+        // Respond to button press
+    }
 }
 \end{lstlisting}
 
-\subsection{General-Purpose Timer Module (GPTM)}
+\subsubsection{Interrupts (Event-Driven Response)}
 
-The TM4C123 includes twelve General-Purpose Timer Modules (GPTM): six 16/32-bit timers (TIMER0-TIMER5) and six 32/64-bit wide timers (WTIMER0-WTIMER5). Each module can operate as two independent 16-bit timers or one 32-bit timer.
+In interrupt-driven input, the GPIO peripheral notifies the CPU when an input change occurs by generating an \textbf{interrupt request} (IRQ). The CPU immediately stops its current task, executes an \textbf{Interrupt Service Routine} (ISR), and then resumes normal operation.
 
-\subsubsection{GPTM Features}
-
-GPTM modules provide:
 \begin{itemize}[nosep]
-  \item \textbf{16-bit or 32-bit operation}: Configurable timer width
-  \item \textbf{Two independent timers}: Timer A and Timer B in each module
-  \item \textbf{Multiple operating modes}:
-    \begin{itemize}[nosep]
-      \item One-Shot mode: Timer runs once and stops
-      \item Periodic mode: Timer reloads automatically
-      \item Real-Time Clock (RTC) mode: Precise time-keeping
-      \item PWM mode: Pulse Width Modulation output
-      \item Input Capture mode: Measure input signal timing
-    \end{itemize}
-  \item \textbf{Prescaler}: Extends timer range in 16-bit mode (8-bit prescaler for standard timers)
-  \item \textbf{Interrupt generation}: Timeout, match, and capture interrupts
-  \item \textbf{Trigger and synchronization}: Can trigger ADC conversions or synchronize with other timers
-\end{itemize}
-
-\subsubsection{GPTM Architecture}
-
-Each GPTM module contains:
-\begin{itemize}[nosep]
-  \item \textbf{Timer A}: Independent timer with its own registers
-  \item \textbf{Timer B}: Independent timer with its own registers
-  \item \textbf{Configuration Register (CFG)}: Selects 16-bit or 32-bit mode
-  \item \textbf{Mode Registers (TAMR, TBMR)}: Configure operating mode for each timer
-  \item \textbf{Load Registers (TAILR, TBILR)}: Set the reload/start value
-  \item \textbf{Prescaler Registers (TAPR, TBPR)}: Extend timer range (16-bit mode only)
-  \item \textbf{Control Register (CTL)}: Enable/disable timers and configure behavior
-  \item \textbf{Interrupt Registers (IMR, RIS, MIS, ICR)}: Manage interrupts
+  \item \textbf{Efficiency}: The CPU can do other work or sleep until an input event occurs.
+  \item \textbf{Responsiveness}: The CPU reacts immediately to input changes.
+  \item \textbf{Power Efficiency}: The CPU can remain in low-power modes and wake only when needed.
 \end{itemize}
 
 \noindent
-In 32-bit mode, Timer A operates as a full 32-bit timer, and Timer B is not available. In 16-bit mode, both Timer A and Timer B operate independently as 16-bit timers.
+Interrupts are essential for responsive embedded systems and are the preferred method for handling asynchronous events.
 
-\subsubsection{GPTM Configuration Registers}
+\begin{lstlisting}[caption={Interrupt Example (Conceptual)}, language=C]
+// Main loop can perform other tasks
+while (1) {
+    // Do other work or sleep
+}
 
-Every \texttt{TIMERx->}\emph{reg} reference below is a \texttt{Base + offset} access, the same pattern used for GPIO in Experiment 4. Standard timers are clock-gated by \texttt{RCGCTIMER} (\texttt{0x400FE604}, bits 0-5 for \texttt{TIMER0-TIMER5}); wide timers have their own gating register, \texttt{RCGCWTIMER} (\texttt{0x400FE65C}, bits 0-5 for \texttt{WTIMER0-WTIMER5}). The appropriate bit must be set before touching a module's registers.
-
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{ll}
-\toprule
-\textbf{Module} & \textbf{Base Address} \\
-\midrule
-TIMER0 & 0x40030000 \\
-TIMER1 & 0x40031000 \\
-TIMER2 & 0x40032000 \\
-TIMER3 & 0x40033000 \\
-TIMER4 & 0x40034000 \\
-TIMER5 & 0x40035000 \\
-WTIMER0 & 0x40036000 \\
-WTIMER1 & 0x40037000 \\
-WTIMER2 & 0x4004C000 \\
-WTIMER3 & 0x4004D000 \\
-WTIMER4 & 0x4004E000 \\
-WTIMER5 & 0x4004F000 \\
-\bottomrule
-\end{tabular}
-\caption{GPTM Module Base Addresses}
-\end{table}
-
-\bigskip
-\subsubsection*{GPTMCFG — Timer Configuration Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->CFG} — GPTM Configuration (\texttt{Base + 0x000})
-
-\noindent
-The \texttt{CFG} register selects the timer width (16-bit or 32-bit mode).
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~ENABL~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{13}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{3}{GPTMCFG}
-\end{bytefield}
-\caption{GPTMCFG Register — Timer Width Configuration}
-\end{figure}
-
-\noindent
-\textbf{GPTMCFG Field (Bits 2:0):}
-\begin{itemize}[nosep]
-    \item \texttt{0x0}: For a 16/32-bit timer, this value selects the 32-bit timer configuration. For a 32/64-bit wide timer, this value selects the 64-bit timer configuration.
-    \item \texttt{0x1}: For a 16/32-bit timer, this value selects the 32-bit real-time clock (RTC) counter configuration. For a 32/64-bit wide timer, this value selects the 64-bit real-time clock (RTC) counter configuration.
-    \item \texttt{0x2-0x3}: Reserved
-    \item \texttt{0x4}: For a 16/32-bit timer, this value selects the 16-bit timer configuration. For a 32/64-bit wide timer, this value selects the 32-bit timer configuration. The function is controlled by bits 1:0 of \textbf{GPTMTAMR} and \textbf{GPTMTBMR}.
-    \item \texttt{0x5-0x7}: Reserved
-\end{itemize}
-\bigskip
-\subsubsection*{GPTMTAMR — Timer A Mode Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->TAMR} — GPTM Timer A Mode (\texttt{Base + 0x004})
-
-\noindent
-The \texttt{TAMR} register configures the operating mode for Timer A.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~TACMR~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{4}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TAPLO}} & \bitbox{1}{\miniscule{TAMRSU}} & \bitbox{1}{\miniscule{TAPWMIE}} & 
-\bitbox{1}{\miniscule{TAILD}} & \bitbox{1}{\miniscule{TASNAPS}} & \bitbox{1}{\miniscule{TAWOT}} &
-\bitbox{1}{\miniscule{TAMIE}} & \bitbox{1}{\miniscule{TACDIR}} & \bitbox{1}{\miniscule{TAAMS}} & \bitbox{1}{\miniscule{TACMR}} & \bitbox{2}{\miniscule{TAMR}}
-\end{bytefield}
-\caption{GPTMTAMR Register — Timer A Mode Configuration}
-\end{figure}
-
-\noindent
-\textbf{Key Fields:}
-\begin{itemize}[nosep]
-  \item \textbf{Bits 1:0 (TAMR)}: Timer A Mode
-    \begin{itemize}[nosep]
-      \item \texttt{0x1}: One-Shot mode
-      \item \texttt{0x2}: Periodic mode
-      \item \texttt{0x3}: Capture mode
-    \end{itemize}
-    \item \textbf{Bit 4 (TACDIR)}: Timer A Count Direction (0 = down, 1 = up)
-\end{itemize}
-For this experiment, we will only be using One-Shot and Periodic modes. For more details on other fields, refer to the datasheet.
-\bigskip
-\subsubsection*{GPTMTAILR — Timer A Interval Load Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->TAILR} — GPTM Timer A Interval Load (\texttt{Base + 0x028})
-
-\noindent
-The \texttt{TAILR} register sets the start/reload value for Timer A.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~TACMR~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}{TAILR[31:16]} \\
-\bitheader{0-15} \\
-\bitbox{16}{TAILR[15:0]}
-\end{bytefield}
-\caption{GPTMTAILR Register — Timer A Interval Load Value}
-\end{figure}
-
-\noindent
-\textbf{TAILR Field:}
-\begin{itemize}[nosep]
-    \item \textbf{Count-down mode}: Specifies the starting count value loaded into the timer
-    \item \textbf{Count-up mode}: Sets the upper bound for the timeout event
-    \item \textbf{32-bit mode}: Full 32-bit register (upper 16 bits correspond to GPTMTBILR contents)
-    \item \textbf{16-bit mode}: Only bits [15:0] are used (upper 16 bits read as 0, no effect on GPTMTBILR)
-    \item \textbf{64-bit Wide Timer mode}: Contains bits [31:0] of the 64-bit count (GPTMTBILR contains bits [63:32])
-\end{itemize}
-
-\bigskip
-\subsubsection*{GPTMTAPR — Timer A Prescaler Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->TAPR} — GPTM Timer A Prescaler (\texttt{Base + 0x038})
-
-\noindent
-The \texttt{TAPR} register extends the timer range in 16-bit mode by providing an 8-bit prescaler.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~TAPSR~}}]{16}
-     
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{8}{TAPSR} \\
-\end{bytefield}
-\caption{GPTMTAPR Register — Timer A Prescaler (16-bit mode only)}
-\end{figure}
-
-\noindent
-\textbf{TAPSR Field (Bits 7:0):}
-\begin{itemize}[nosep]
-  \item Prescaler value: \texttt{0x00} to \texttt{0xFF} (0 to 255)
-  \item Only used in 16-bit mode; ignored in 32-bit mode
-  \item Effective divisor: \texttt{TAPSR + 1} in down-count mode (in count-up mode it extends the counter range instead)
-\end{itemize}
-
-\bigskip
-\subsubsection*{GPTMCTL — Timer Control Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->CTL} — GPTM Control (\texttt{Base + 0x00C})
-
-\noindent
-The \texttt{CTL} register enables/disables timers and configures their behavior.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~ENABL~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{1}{\miniscule{TBPWML}} &
-\bitbox{1}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TBOTE}} & \bitbox{1}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{2}{\miniscule{TBEVENT}} & \bitbox{1}{\miniscule{TBSTALL}} & \bitbox{1}{\miniscule{TBEN}} &
-\bitbox{1}{\miniscule{TAPWML}} & \bitbox{1}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TAOTE}} & \bitbox{1}{\miniscule{RTCEN}} & \bitbox{2}{\miniscule{TAEVENT}} & \bitbox{1}{\miniscule{TASTALL}} & \bitbox{1}{\miniscule{TAEN}}
-\end{bytefield}
-\caption{GPTMCTL Register — Timer Enable and Control}
-\end{figure}
-
-
-\noindent
-\textbf{Key Control Functions:}
-\begin{itemize}[nosep]
-    \item \textbf{Timer Enable Control}: TAEN (bit 0) and TBEN (bit 8) independently enable/disable Timer A and Timer B
-    \item \textbf{Output Trigger Control}: TAOTE (bit 5) and TBOTE (bit 13) enable timers to trigger external peripherals (ADC, other timers, etc.)
-    \item \textbf{Independent Operation}: Each timer can be controlled separately, allowing flexible dual-timer configurations
-\end{itemize}
-\bigskip
-\subsubsection*{GPTMIMR — Interrupt Mask Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->IMR} — GPTM Interrupt Mask (\texttt{Base + 0x018})
-
-\noindent
-The \texttt{IMR} register enables or disables (masks/unmasks) timer interrupts.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~CBEIM~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{4}[bgcolor=gray!10]{\tiny{reserved}} &
-\bitbox{1}{\miniscule{TBMIM}} & \bitbox{1}{\miniscule{CBEIM}} & \bitbox{1}{\miniscule{CBMIM}} & \bitbox{1}{\miniscule{TBTOIM}} & \bitbox{3}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TAMIM}} & \bitbox{1}{\miniscule{RTCIM}} & \bitbox{1}{\miniscule{CAEIM}} &  \bitbox{1}{\miniscule{CAMIM}} & \bitbox{1}{\miniscule{TATOIM}}
-\end{bytefield}
-\caption{GPTMIMR Register — Interrupt Mask}
-\end{figure}
-
-\noindent
-\textbf{Key Bits:}
-\begin{itemize}[nosep]
-  \item \textbf{Bit 0 (TATOIM)}: Timer A Timeout Interrupt Mask (0 = masked, 1 = enabled)
-  \item \textbf{Bit 8 (TBTOIM)}: Timer B Timeout Interrupt Mask (0 = masked, 1 = enabled)
-\end{itemize}
-\bigskip
-
-\subsubsection*{GPTMICR — Interrupt Clear Register}
-
-\noindent\textbf{Register:} \texttt{TIMERx->ICR} — GPTM Interrupt Clear (\texttt{Base + 0x024})
-
-\noindent
-Writing '1' to a bit in this register clears the corresponding interrupt flag.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{\tiny{~ENABL~}}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{15}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{WUECINT}} \\
-\bitheader{0-15} \\
-\bitbox{4}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TBMCINT}} & \bitbox{1}{\miniscule{CBECINT}} & \bitbox{1}{\miniscule{CBMCINT}} & \bitbox{1}{\miniscule{TBTOCINT}} &
-\bitbox{3}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{\miniscule{TAMCINT}} & \bitbox{1}{\miniscule{RTCCINT}} & \bitbox{1}{\miniscule{CAECINT}} & \bitbox{1}{\miniscule{CAMCINT}} & \bitbox{1}{\miniscule{TATOCINT}}
-\end{bytefield}
-\caption{GPTMICR Register — Interrupt Clear}
-\end{figure}
-
-\subsubsection{GPTM Timing Calculations}
-
-The timer period depends on the operating mode and configuration:
-\bigskip
-\subsubsection*{32-bit Mode (No Prescaler)}
-
-In 32-bit mode, the period is:
-
-\[
-T = \frac{\text{TAILR} + 1}{f_{\text{clock}}}
-\]
-
-\noindent
-At 50 MHz, the maximum period is:
-\[
-T_{\text{max}} = \frac{2^{32}}{50{,}000{,}000} = \frac{4{,}294{,}967{,}296}{50{,}000{,}000} \approx 85.9 \text{ seconds}
-\]
-\bigskip
-\subsubsection*{16-bit Mode (With Prescaler)}
-
-In 16-bit mode, the prescaler extends the timer range (down-count mode):
-
-\[
-T = \frac{(\text{TAILR} + 1) \times (\text{TAPR} + 1)}{f_{\text{clock}}}
-\]
-
-\noindent
-At 50 MHz, with maximum values (\texttt{TAILR = 0xFFFF}, \texttt{TAPR = 0xFF}):
-\[
-T_{\text{max}} = \frac{65{,}536 \times 256}{50{,}000{,}000} = \frac{16{,}777{,}216}{50{,}000{,}000} \approx 0.335 \text{ seconds}
-\]
-
-\noindent
-
-
-\subsubsection{GPTM Interrupt Numbers}
-Each GPTM module has a unique interrupt number for Timer A and Timer B; you can find these in the TM4C123 datasheet or in the device headers. The CMSIS-compliant header \texttt{tm4c123gh6pm.h} defines these as \texttt{IRQn\_Type} enumerations (e.g., \texttt{TIMER1A\_IRQn}), which work directly with the NVIC helper functions.
-
-\subsubsection*{Enabling an interrupt (CMSIS).}
-Use \texttt{NVIC\_EnableIRQ(IRQn\_Type irqn)}; CMSIS handles the correct ISER register and bit index for you.
-\begin{lstlisting}[language=C]
-#include "TM4C123.h"
-
-// Enable TIMER1A interrupt:
-NVIC_EnableIRQ(TIMER1A_IRQn);
-
-// Enable multiple GPTM interrupts:
-NVIC_EnableIRQ(TIMER0A_IRQn);
-NVIC_EnableIRQ(TIMER1A_IRQn);
-NVIC_EnableIRQ(TIMER2A_IRQn);
+// ISR is called automatically when button is pressed
+void ButtonISR(void) {
+    // Respond to button press
+    // Clear interrupt flag
+}
 \end{lstlisting}
 
-\subsubsection*{Setting interrupt priority.}
-Use \texttt{NVIC\_SetPriority(IRQn\_Type irqn, uint32\_t priority)} before enabling the interrupt. 
-On Cortex-M4 (TM4C123), priorities are typically 0-7 (0 = highest urgency).
-\begin{lstlisting}[language=C]
-// Assign priorities (lower number = higher priority)
-NVIC_SetPriority(TIMER0A_IRQn, 3);
-NVIC_SetPriority(TIMER1A_IRQn, 4);
-NVIC_SetPriority(TIMER2A_IRQn, 5);
+\subsection{How Interrupts Work}
 
-// Then enable them
-NVIC_EnableIRQ(TIMER0A_IRQn);
-NVIC_EnableIRQ(TIMER1A_IRQn);
-NVIC_EnableIRQ(TIMER2A_IRQn);
+Understanding the interrupt mechanism is essential for writing interrupt-driven programs. This section explains the complete lifecycle of an interrupt from trigger to completion.
+
+\subsubsection{Interrupt Lifecycle}
+
+When a GPIO pin configured for interrupts detects the specified event (e.g., a button press), the following sequence occurs:
+
+\paragraph{1. Event Detection}
+The GPIO peripheral continuously monitors the pin according to its configuration (edge/level detection). When the configured condition is met (e.g., falling edge), the peripheral sets an internal flag.
+
+\paragraph{2. Interrupt Request (IRQ)}
+If the interrupt is unmasked (enabled in \texttt{GPIOIM}), the GPIO module sends an interrupt request to the NVIC. The NVIC receives interrupt requests from all peripherals and manages their execution.
+
+\paragraph{3. CPU Response}
+The NVIC checks if the interrupt is enabled (\texttt{NVIC\_ISER}) and compares its priority with currently executing code. If the interrupt should be serviced:
+\begin{itemize}[nosep]
+  \item The CPU finishes executing the current instruction.
+  \item The CPU automatically saves the current execution context (program counter, registers, status flags) onto the stack.
+  \item The CPU loads the address of the Interrupt Service Routine (ISR) from the vector table.
+  \item Execution jumps to the ISR.
+\end{itemize}
+
+\paragraph{4. ISR Execution}
+The ISR (e.g., \texttt{GPIOF\_Handler()}) executes and must:
+\begin{itemize}[nosep]
+  \item Identify which pin(s) caused the interrupt (read \texttt{GPIOMIS}).
+  \item Perform the required response (toggle LED, set flag, etc.).
+  \item Clear the interrupt flag (write to \texttt{GPIOICR}) — \textbf{critical step}.
+\end{itemize}
+
+\paragraph{5. Return from Interrupt}
+When the ISR completes (returns), the CPU:
+\begin{itemize}[nosep]
+  \item Automatically restores the saved context from the stack.
+  \item Resumes execution from where it was interrupted.
+\end{itemize}
+
+\noindent
+This entire process happens in microseconds, making interrupts extremely responsive.
+
+\subsubsection{Why Clear the Interrupt Flag?}
+
+The interrupt flag remains set until explicitly cleared by software. If the ISR does not clear the flag by writing to \texttt{GPIOICR}, the NVIC will immediately re-trigger the interrupt as soon as the ISR returns, creating an infinite loop of interrupts that hangs the system.
+
+\begin{lstlisting}[caption={Critical: Always clear the interrupt flag}, language=C]
+void GPIOF_Handler(void) {
+    // Read which pin caused interrupt
+    if (GPIOF->MIS & (1 << 4)) {
+        // Handle PF4 interrupt
+        // ...
+        
+        GPIOF->ICR |= (1 << 4);  // MUST clear flag!
+    }
+}
 \end{lstlisting}
 
+\subsubsection{Interrupt Advantages and Considerations}
+
+\paragraph{Advantages:}
+\begin{itemize}[nosep]
+  \item \textbf{Efficient}: CPU can perform other tasks or sleep while waiting for events.
+  \item \textbf{Responsive}: Immediate response to external events (microsecond latency).
+  \item \textbf{Power-efficient}: CPU can remain in low-power modes between events.
+  \item \textbf{Real-time}: Predictable timing for critical events.
+\end{itemize}
+
+\paragraph{Considerations:}
+\begin{itemize}[nosep]
+  \item \textbf{Complexity}: More complex to implement and debug than polling.
+  \item \textbf{Shared data}: ISRs and main code must carefully manage shared variables (use \texttt{volatile}).
+  \item \textbf{ISR constraints}: ISRs should be short and fast — avoid delays and lengthy operations.
+  \item \textbf{Debouncing}: Mechanical switch bouncing can trigger multiple interrupts; software or hardware debouncing is often necessary.
+\end{itemize}
+
+\subsection{GPIO Input Configuration Registers}
 
 
+Before a GPIO pin can be used as an input, it must first be configured for digital functionality.  
+As discussed in the previous experiment, the following three steps are required for \textbf{all GPIO pins}:
+\medskip
+\begin{enumerate}[nosep]
+  \item \textbf{Enable the GPIO clock} via \texttt{SYSCTL\_RCGCGPIO}.
+  \item \textbf{Select the direction} of the pin using \texttt{GPIO\_DIR}  
+        (\texttt{0} for input, \texttt{1} for output).
+  \item \textbf{Enable digital functionality} using \texttt{GPIO\_DEN}.
+\end{enumerate}
+\medskip
+Once a pin is set as an input, the logic level on the pin may be undefined if it is left floating (not driven by an external source).  
+To ensure a stable logic level, internal resistors can be activated:
+\medskip
+These resistors are controlled by two dedicated registers:
+\begin{itemize}[nosep]
+  \item \texttt{GPIO\_PUR} — Enable internal pull-up resistor on the selected pin(s).
+  \item \texttt{GPIO\_PDR} — Enable internal pull-down resistor on the selected pin(s).
+\end{itemize}
 
+\subsubsection*{GPIOPUR — Pull-Up Resistor Enable}
+
+\noindent\textbf{Register:} \texttt{GPIOPUR} — GPIO Pull-Up Select (Port F: \texttt{0x40025510})
+
+\noindent
+The \texttt{GPIOPUR} register enables the internal pull-up resistor for each GPIO pin. When enabled, the pin is weakly pulled to logic '1' (3.3V) through a resistor (typically 13-40 k$\Omega$). This prevents floating inputs and is essential for switches connected to ground.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOPUR Register — Pull-Up Enable}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Pull-up disabled (default)
+  \item \textbf{1}: Pull-up enabled
+\end{itemize}
+
+\noindent
+For the LaunchPad switches (SW1 on PF4, SW2 on PF0), pull-ups must be enabled.
+
+\bigskip
+\subsubsection*{GPIOPDR — Pull-Down Resistor Enable}
+
+\noindent\textbf{Register:} \texttt{GPIOPDR} — GPIO Pull-Down Select (Port F: \texttt{0x40025514})
+
+\noindent
+The \texttt{GPIOPDR} register enables the internal pull-down resistor for each GPIO pin. When enabled, the pin is weakly pulled to logic '0' (0V) through a resistor. This is used for switches connected to power (\texttt{VCC}).
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOPDR Register — Pull-Down Enable}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Pull-down disabled (default)
+  \item \textbf{1}: Pull-down enabled
+\end{itemize}
+
+\noindent
+\textbf{Note:} Pull-up and pull-down resistors should not be enabled simultaneously on the same pin.
+\subsection{Unlocking Protected GPIO Pins}
+
+Some GPIO pins on the TM4C123 are \textbf{locked} by default to prevent accidental reconfiguration of critical functions such as JTAG/SWD (debug interface) and NMI (Non-Maskable Interrupt).
+
+On Port F, pin \textbf{PF0} is locked because it is the NMI input by default. To use PF0 as a general-purpose GPIO input (for SW2 on the LaunchPad), it must be unlocked.
+
+\subsubsection*{GPIOLOCK — Lock Register}
+
+\noindent\textbf{Register:} \texttt{GPIOLOCK} — GPIO Lock (Port F: \texttt{0x40025520})
+
+\noindent
+The \texttt{GPIOLOCK} register controls write access to the \texttt{GPIOCR} register. Writing the magic value \texttt{0x4C4F434B} ("LOCK" in ASCII) unlocks the port and allows modifications to the commit register.
+
+
+\noindent
+\textbf{Values:}
+\begin{itemize}[nosep]
+  \item Write \texttt{0x4C4F434B}: Unlock the port (allow changes to \texttt{GPIOCR})
+  \item Write any other value: Lock the port (prevent changes to \texttt{GPIOCR})
+  \item Read: Returns \texttt{0x00000001} if locked, \texttt{0x00000000} if unlocked
+\end{itemize}
+
+\bigskip
+\subsubsection*{GPIOCR — Commit Register}
+
+\noindent\textbf{Register:} \texttt{GPIOCR} — GPIO Commit (Port F: \texttt{0x40025524})
+
+\noindent
+The \texttt{GPIOCR} register controls which pins can be reconfigured. After unlocking with \texttt{GPIOLOCK}, set the corresponding bit in \texttt{GPIOCR} to allow changes to that pin's configuration registers.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOCR Register — Commit Control}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Pin configuration is locked (cannot be modified)
+  \item \textbf{1}: Pin configuration is unlocked (can be modified)
+\end{itemize}
+
+\bigskip
+\subsubsection*{Unlocking Procedure}
+
+To unlock a protected pin (such as PF0):
+
+\begin{enumerate}[nosep]
+  \item Write the unlock key \texttt{0x4C4F434B} to the \texttt{GPIOLOCK} register.
+  \item Set the corresponding bit in the \texttt{GPIOCR} (Commit Register) to allow changes.
+  \item Configure the pin normally (\texttt{GPIODIR}, \texttt{GPIODEN}, etc.).
+\end{enumerate}
+
+\begin{lstlisting}[caption={Unlocking PF0 for GPIO use}, language=C]
+GPIOF->LOCK = 0x4C4F434B;    // Unlock Port F
+GPIOF->CR   |= (1 << 0);     // Allow changes to PF0
+\end{lstlisting}
+
+\noindent
+After unlocking, PF0 can be configured like any other GPIO pin.
+
+\bigskip
+\subsection{GPIO Interrupt Configuration Registers}
+
+To configure a GPIO pin to generate interrupts, several registers must be configured. The process involves selecting the trigger condition (edge or level, rising or falling) and enabling the interrupt at both the GPIO module and the NVIC.
+
+\subsubsection*{GPIOIS — Interrupt Sense Register}
+
+\noindent\textbf{Register:} \texttt{GPIOIS} — GPIO Interrupt Sense (Port F: \texttt{0x40025404})
+
+\noindent
+The \texttt{GPIOIS} register determines whether interrupts are triggered by signal \textbf{edges} (transitions) or \textbf{levels} (steady states).
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOIS Register — Interrupt Sense}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Edge-sensitive (detects transitions) — typical for buttons
+  \item \textbf{1}: Level-sensitive (detects steady state)
+\end{itemize}
+
+\bigskip
+\subsubsection*{GPIOIBE — Interrupt Both Edges Register}
+
+\noindent\textbf{Register:} \texttt{GPIOIBE} — GPIO Interrupt Both Edges (Port F: \texttt{0x40025408})
+
+\noindent
+When edge-sensitive mode is selected (bit cleared in \texttt{GPIOIS}), this register determines whether interrupts occur on a single edge or both edges.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOIBE Register — Interrupt Both Edges}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Single edge (rising or falling, defined by \texttt{GPIOIEV})
+  \item \textbf{1}: Both rising and falling edges trigger interrupts
+\end{itemize}
+
+\bigskip
+\subsubsection*{GPIOIEV — Interrupt Event Register}
+
+\noindent\textbf{Register:} \texttt{GPIOIEV} — GPIO Interrupt Event (Port F: \texttt{0x4002540C})
+
+\noindent
+For single-edge interrupts (when the corresponding bit in \texttt{GPIOIBE} is 0), this register selects which edge triggers the interrupt.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOIEV Register — Interrupt Event}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Falling edge (high-to-low transition)
+  \item \textbf{1}: Rising edge (low-to-high transition)
+\end{itemize}
+
+\noindent
+For switches with pull-ups (LaunchPad SW1/SW2), falling edge interrupts detect button presses.
+
+\bigskip
+\subsubsection*{GPIOIM — Interrupt Mask Register}
+
+\noindent\textbf{Register:} \texttt{GPIOIM} — GPIO Interrupt Mask (Port F: \texttt{0x40025410})
+
+\noindent
+The \texttt{GPIOIM} register enables or disables (masks/unmasks) interrupt generation for each pin. Setting a bit to '1' allows that pin to generate interrupts.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+
+\caption{GPIOIM Register — Interrupt Mask}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: Interrupt disabled (masked) — default
+  \item \textbf{1}: Interrupt enabled (unmasked)
+\end{itemize}
+
+\bigskip
+\subsubsection*{GPIOMIS — Masked Interrupt Status Register}
+
+\noindent\textbf{Register:} \texttt{GPIOMIS} — GPIO Masked Interrupt Status (Port F: \texttt{0x40025418})
+
+\noindent
+This read-only register shows which pins have pending interrupts after masking. The ISR reads this register to determine which pin(s) caused the interrupt.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOMIS Register — Masked Interrupt Status (Read-Only)}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item \textbf{0}: No interrupt pending for this pin
+  \item \textbf{1}: Interrupt pending for this pin
+\end{itemize}
+
+\bigskip
+\subsubsection*{GPIOICR — Interrupt Clear Register}
+
+\noindent\textbf{Register:} \texttt{GPIOICR} — GPIO Interrupt Clear (Port F: \texttt{0x4002541C})
+
+\noindent
+Writing '1' to a bit in this register clears the corresponding interrupt flag. This is \textbf{critical}: the ISR must clear the flag, or the interrupt will continuously re-trigger.
+
+\begin{figure}[H]
+\centering
+\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
+\bitheader[lsb=16]{16-31} \\
+\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
+\bitheader{0-15} \\
+\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
+\end{bytefield}
+\caption{GPIOICR Register — Interrupt Clear}
+\end{figure}
+
+\noindent
+\textbf{Bit Values:}
+\begin{itemize}[nosep]
+  \item Write \textbf{1} to clear the interrupt flag for that pin
+  \item Write \textbf{0} has no effect
+\end{itemize}
+
+\bigskip
 \subsection{Configuration Workflow}
 
-\subsubsection{SysTick Configuration Steps}
+GPIO interrupt configuration is divided into two parts, configuring the pin as an input and configuring the interrupt settings. The following steps summarize the process:
 
-To configure the SysTick timer:
-
+\paragraph{Step 1: Pin Configuration}
+Configure the GPIO pin as an input with proper electrical characteristics:
 \begin{enumerate}[nosep]
-  \item Calculate the reload value: \texttt{LOAD = (Period x SystemCoreClock) - 1}
-  \item Load the value into \texttt{SysTick->LOAD}
-  \item Clear the current value: \texttt{SysTick->VAL = 0}
-  \item Configure \texttt{SysTick->CTRL}:
-    \begin{itemize}[nosep]
-      \item Set bit 0 (ENABLE) to enable the timer
-      \item Set bit 1 (TICKINT) to enable interrupts
-      \item Set bit 2 (CLKSOURCE) to use processor clock
-    \end{itemize}
-  \item Implement \texttt{SysTick\_Handler()} to handle interrupts
+  \item Enable the GPIO port clock (\texttt{RCGCGPIO}).
+  \item Unlock protected pins if needed (\texttt{GPIOLOCK}, \texttt{GPIOCR}).
+  \item Configure the pin as input (\texttt{GPIODIR} = 0).
+  \item Enable the digital function (\texttt{GPIODEN} = 1).
+  \item Enable pull-up or pull-down resistor (\texttt{GPIOPUR} or \texttt{GPIOPDR}).
 \end{enumerate}
+
+\paragraph{Step 2: Interrupt Configuration}
+\begin{enumerate}[nosep]
+  \item Configure interrupt sense (\texttt{GPIOIS} = 0 for edge-sensitive).
+  \item Select edge(s) (\texttt{GPIOIBE}/\texttt{GPIOIEV}).
+  \item \textbf{Clear any prior flags} (\texttt{GPIOICR} = 1 for the pin).
+  \item Unmask the pin in the GPIO (\texttt{GPIOIM} = 1).
+  \item Enable the IRQ in the NVIC.
+\end{enumerate}
+
+
+\subsection{NVIC — Nested Vectored Interrupt Controller}
+
+The NVIC manages all peripheral interrupts on the Cortex-M4, deciding which ISR to execute based on enable bits, masking, and priority.
+
+\subsubsection*{NVIC\_ISER — Interrupt Set-Enable Registers}
+
+\noindent\textbf{Registers:} \texttt{NVIC\_ISER[0..3]} (\texttt{0xE000E100-0xE000E10C})
 
 \noindent
-Or use the CMSIS function:
-\begin{lstlisting}[language=C]
-SysTick_Config(SystemCoreClock / 1000);  // 1 ms period
-\end{lstlisting}
+Each 32-bit \texttt{ISER} register enables up to 32 interrupt sources.
+Writing a '1' to a bit enables that IRQ; writing '0' has no effect.
 
-\subsubsection{GPTM Configuration Steps (Periodic Mode)}
-
-To configure a GPTM timer in periodic mode:
-
-\begin{enumerate}[nosep]
-  \item Enable the timer clock in \texttt{SYSCTL->RCGCTIMER}
-  \item Wait for clock stabilization (a few \texttt{NOP} instructions, or poll a ready bit — see Experiment 4's note on why this delay is needed)
-  \item Disable the timer: \texttt{TIMERx->CTL = 0}
-  \item Select timer width: \texttt{TIMERx->CFG} (\texttt{0x00} for 32-bit, \texttt{0x04} for 16-bit)
-  \item Configure mode: \texttt{TIMERx->TAMR = 0x02} (periodic mode, count down)
-  \item Set prescaler (16-bit mode only): \texttt{TIMERx->TAPR = value}
-  \item Set reload value: \texttt{TIMERx->TAILR = value}
-  \item Clear interrupt flag: \texttt{TIMERx->ICR = 0x01}
-  \item Enable timeout interrupt: \texttt{TIMERx->IMR |= 0x01}
-  \item Enable interrupt in NVIC: \texttt{NVIC->ISER[n] |= (1 << bit)}
-  \item Enable the timer: \texttt{TIMERx->CTL |= 0x01}
-  \item Implement the ISR (e.g., \texttt{TIMER1A\_Handler()})
-\end{enumerate}
+\noindent
+\texttt{NVIC\_ISER[n]} is the CMSIS name for exactly the same registers Experiment 5 called \texttt{NVIC\_ENx} (the TI datasheet naming) — \texttt{NVIC\_ISER[0]} \emph{is} \texttt{NVIC\_EN0}, at the same address, with the same set-enable behavior. Likewise \texttt{NVIC\_ICER[n]} (clear-enable) is \texttt{NVIC\_DISx}. The two names aren't different register sets, just different sources naming the same hardware.
 
 \begin{table}[H]
 \centering
 \small
-\setlength{\tabcolsep}{6pt}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabularx}{0.98\linewidth}{>{\ttfamily}l X >{\ttfamily}l}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{lll}
 \toprule
-\textnormal{\textbf{Register}} & \textnormal{\textbf{Purpose}} & \textnormal{\textbf{Typical Value}} \\
+\textbf{Register} & \textbf{IRQ Range} & \textbf{Address} \\
 \midrule
-RCGCTIMER      & Enable timer clock                                       & Set bit for TIMERx \\
-TIMERx->CFG    & Select width (16-bit vs 32-bit)                           & 0x00 (32-bit) or 0x04 (16-bit) \\
-TIMERx->TAMR   & Set mode                                                  & 0x02 (periodic, count down) \\
-TIMERx->TAILR  & Set reload value                                          & From desired period \\
-TIMERx->TAPR   & Prescaler (extends range in 16-bit mode)                  & 0-255 (16-bit only) \\
-TIMERx->CTL    & Enable timer                                              & TAEN = 1 (bit 0) \\
-TIMERx->IMR    & Unmask interrupt                                          & TATOIM = 1 (bit 0) \\
-TIMERx->ICR    & Clear interrupt flag (write-1-to-clear)                   & TATOCINT = 1 (bit 0) \\
+\texttt{ISER[0]} & 0-31  & 0xE000E100 \\
+\texttt{ISER[1]} & 32-63 & 0xE000E104 \\
+\texttt{ISER[2]} & 64-95 & 0xE000E108 \\
+\texttt{ISER[3]} & 96-127 & 0xE000E10C \\
 \bottomrule
-\end{tabularx}
-\caption{GPTM Configuration Register Summary}
+\end{tabular}
+\caption{Interrupt ranges for NVIC\_ISER registers}
 \end{table}
+
+\noindent
+For the TM4C123, all GPIO interrupts (IRQ0-IRQ4) for Ports A-E, and Port F (IRQ30) are in \texttt{ISER[0]}.
+\bigskip
+
+
+\noindent
+\textbf{Example — Enabling Port F Manually}
+\begin{lstlisting}[caption={Enable GPIO Port F interrupt manually}, language=C]
+NVIC->ISER[0] |= (1 << 30);   // IRQ30 - NVIC_EN0 bit 30
+\end{lstlisting}
+
+\noindent
+\textbf{CMSIS Alternative (Recommended):}
+\begin{lstlisting}[language=C]
+NVIC_EnableIRQ(GPIOF_IRQn);
+\end{lstlisting}
+
+\noindent
+This function automatically computes the correct register and bit:
+\begin{lstlisting}[language=C]
+void NVIC_EnableIRQ(IRQn_Type IRQn) {
+    if (IRQn >= 0)
+        NVIC->ISER[IRQn >> 5] |= (1u << (IRQn & 0x1F)); // /32 and %32
+}
+\end{lstlisting}
+\noindent
+\paragraph{Explanation:}
+\[
+\text{Register index} = \left\lfloor \frac{\text{IRQn}}{32} \right\rfloor, \qquad
+\text{Bit position} = \text{IRQn} \bmod 32.
+\]
+
+\noindent
+Each \texttt{ISER} register enables 32 interrupts.  
+Dividing the IRQ number by 32 selects the correct register index, and the remainder (\texttt{IRQn \% 32}) identifies the bit position within that 32-bit register.
+\subsection{Interrupt Service Routine (ISR)}
+
+When a GPIO interrupt occurs, the NVIC calls the corresponding ISR. For GPIO Port F, the ISR is named \texttt{GPIOF\_Handler()}. The ISR must:
+
+\begin{enumerate}[nosep]
+  \item Determine which pin caused the interrupt (read \texttt{GPIOMIS}).
+  \item Perform the required action (e.g., toggle an LED).
+  \item Clear the interrupt flag (write to \texttt{GPIOICR}).
+\end{enumerate}
+
+\begin{lstlisting}[caption={GPIO Port F ISR Template}, language=C]
+void GPIOF_Handler(void) {
+    if (GPIOF->MIS & (1 << 4)) {     // Check if PF4 caused interrupt
+        // Respond to SW1 press
+        GPIOF->ICR |= (1 << 4);      // Clear PF4 interrupt flag
+    }
+    if (GPIOF->MIS & (1 << 0)) {     // Check if PF0 caused interrupt
+        // Respond to SW2 press
+        GPIOF->ICR |= (1 << 0);      // Clear PF0 interrupt flag
+    }
+}
+\end{lstlisting}
 
 
 \newpage
@@ -678,90 +752,75 @@ TIMERx->ICR    & Clear interrupt flag (write-1-to-clear)                   & TAT
 
 \subsection{Examples}
 
-The following examples demonstrate SysTick and GPTM configuration and usage.
+The following examples demonstrate GPIO input configuration using polling and interrupt-based approaches.
 
-\subsubsection{Example 1 — Millisecond Counter with SysTick Timer}
+\subsubsection{Example 1 — Reading Switch Input Using Polling}
 
-This example configures the SysTick timer to generate interrupts every 100 ms and toggles the green LED (PF3) in the interrupt handler.
+This example continuously polls the state of SW1 (PF4) and turns on the red LED (PF1) when the button is pressed.
 
-\lstinputlisting[language=C, caption={SysTick timer example — LED blink every 100ms}]{snippets/timers/systick.c}
+\lstinputlisting[language=C, caption={Polling-based switch input reading}]{snippets/gpio/polling.c}
 
 \noindent
 \textbf{Explanation:}
 \begin{itemize}[nosep]
-  \item \texttt{SysTick->LOAD = 5000000 - 1;} sets the reload value for 100 ms at 50 MHz.
-  \item \texttt{SysTick->VAL = 0;} clears the current counter value.
-  \item \texttt{SysTick->CTRL = 0x07;} enables the timer with processor clock and interrupt.
-  \item \texttt{SysTick\_Handler()} is called every 100 ms and toggles the LED.
-  \item \texttt{systick\_counter} tracks the number of interrupts (can be used for longer timing).
+  \item \texttt{GPIOF->PUR |= SWITCH;} enables the internal pull-up resistor on PF4.
+  \item The \texttt{while(1)} loop continuously reads the switch state.
+  \item When \texttt{state == 0}, the button is pressed (pull-up makes it active-low).
+  \item The LED is controlled directly in the main loop without interrupts.
 \end{itemize}
-
 \newpage
-\subsubsection{Example 2 — Maximum 16-bit Delay with GPTM}
+\subsubsection{Example 2 — Interrupt-Driven Switch Input}
 
-This example configures TIMER1 in 16-bit periodic mode with maximum prescaler to achieve the longest possible delay and toggles the blue LED (PF2).
+This example configures SW1 and SW2 to generate interrupts on button presses and toggles the green LED in the ISR.
 
-\lstinputlisting[language=C, caption={GPTM Timer1A example — 16-bit mode with prescaler}]{snippets/timers/timers.c}
+\lstinputlisting[language=C, caption={Interrupt-driven switch input handling}]{snippets/gpio/interrupt.c}
 
 \noindent
 \textbf{Explanation:}
 \begin{itemize}[nosep]
-  \item \texttt{SYSCTL->RCGCTIMER |= (1<<1);} enables clock to TIMER1.
-  \item \texttt{TIMER1->CFG = 0x4;} selects 16-bit mode.
-  \item \texttt{TIMER1->TAMR = 0x02;} configures periodic mode (count down).
-  \item \texttt{TIMER1->TAPR = 256 - 1;} sets prescaler to maximum (divisor = 256).
-  \item \texttt{TIMER1->TAILR = 65536 - 1;} writes 65535 (\texttt{0xFFFF}, the 16-bit maximum).
-  \item Period: $T = \frac{65536 \times 256}{50{,}000{,}000} \approx 0.335$ seconds.
-  \item \texttt{NVIC->ISER[0] |= (1<<21);} enables TIMER1A interrupt (IRQ 21).
-  \item \texttt{TIMER1A\_Handler()} toggles the blue LED and clears the interrupt flag.
+  \item \texttt{GPIOF->LOCK = 0x4C4F434B;} unlocks Port F for PF0 configuration.
+  \item \texttt{GPIOF->CR = 0x01;} allows changes to PF0.
+  \item \texttt{GPIOF->IS \&= \textasciitilde(SW1 | SW2);} configures edge-sensitive interrupts.
+  \item \texttt{GPIOF->IEV \&= \textasciitilde(SW1 | SW2);} selects falling-edge trigger (button press).
+  \item \texttt{GPIOF->ICR |= (SW1 | SW2);} clears any prior interrupt flags before enabling.
+  \item \texttt{GPIOF->IM |= (SW1 | SW2);} unmasks (enables) interrupts for SW1 and SW2.
+  \item \texttt{NVIC->ISER[0] |= (1<<30);} enables GPIO Port F interrupt in NVIC.
+  \item The ISR checks \texttt{GPIOF->MIS} to identify which switch caused the interrupt.
+  \item Each interrupt flag must be cleared with \texttt{GPIOF->ICR} to prevent re-triggering.
 \end{itemize}
-
 \newpage
 \subsection{Tasks}
 
-\subsubsection{Task 1 — Debouncing a Push Button with SysTick}
+\subsubsection{Task 1 — Toggle LED Using Polling}
 
-Modify the SysTick example so that the RED LED (PF1) toggles only when SW1 (PF4) is pressed and properly debounced using the SysTick timer.
+Modify Example 1 to toggle the green LED (PF3) with each press of SW1 (PF4). The LED should change state (ON→OFF or OFF→ON) every time the button is pressed and released.
 
 \paragraph{Requirements:}
 \begin{itemize}[nosep]
-  \item Use \texttt{SysTick\_Config(SystemCoreClock/1000)} to generate a 1 ms tick.
-  \item Implement interrupt-driven GPIO input for SW1 (PF4) as in Experiment 5.
-  \item In the GPIO ISR, use a global millisecond counter to implement 150 ms debouncing.
-  \item Only toggle the RED LED if at least 150 ms have elapsed since the last press.
+  \item Use polling to detect button presses.
+  \item Implement software debouncing by adding a 20\,ms delay after detecting a press.
+  \item Toggle the LED state instead of simply turning it on or off.
+  \item Ensure the LED changes state only once per button press.
+\end{itemize}
+
+\medskip
+
+
+\subsubsection{Task 2 — LED Sequence Using Interrupts}
+
+Modify Example 2 to cycle through LED colors using interrupts:
+\begin{itemize}[nosep]
+  \item Pressing SW1 (PF4) cycles through: \textbf{Red → Blue → Green → Red...}
+  \item Pressing SW2 (PF0) cycles through: \textbf{Yellow → Magenta → Cyan → Yellow...}
+\end{itemize}
+
+\paragraph{Requirements:}
+\begin{itemize}[nosep]
+  \item Use interrupt-driven input handling.
+  \item Maintain separate state variables for each button's LED sequence.
+  \item Update the LED color in the ISR based on the current state.
+  \item Clear interrupt flags properly to avoid repeated triggering.
 \end{itemize}
 
 \paragraph{Hint:}
-Declare global variables:
-\begin{lstlisting}[language=C]
-volatile uint32_t global_ms = 0;
-volatile uint32_t last_press_ms = 0;
-\end{lstlisting}
-
-\noindent
-In \texttt{SysTick\_Handler()}, increment \texttt{global\_ms}. In \texttt{GPIOF\_Handler()}, check:
-\begin{lstlisting}[language=C]
-if ((global_ms - last_press_ms) >= 150) {
-    GPIOF->DATA ^= (1 << 1);  // Toggle RED LED
-    last_press_ms = global_ms;
-}
-\end{lstlisting}
-
-\subsubsection{Task 2 — Multiple Blinking LEDs with GPTM}
-
-Use three GPTM timers (TIMER0A, TIMER1A, TIMER2A) to blink the three LEDs at different rates:
-
-\begin{itemize}[nosep]
-  \item \textbf{RED LED (PF1)}: Blink every 250 ms (use TIMER0A)
-  \item \textbf{BLUE LED (PF2)}: Blink every 500 ms (use TIMER1A)
-  \item \textbf{GREEN LED (PF3)}: Blink every 1000 ms (use TIMER2A)
-\end{itemize}
-
-\paragraph{Requirements:}
-\begin{itemize}[nosep]
-  \item Configure each timer in 32-bit periodic mode.
-  \item Calculate the \texttt{TAILR} values for each period at 50 MHz.
-  \item Enable interrupts for each timer in the NVIC.
-  \item Implement separate ISRs (\texttt{TIMER0A\_Handler()}, \texttt{TIMER1A\_Handler()}, \texttt{TIMER2A\_Handler()}).
-  \item Each ISR should toggle its corresponding LED and clear the interrupt flag.
-\end{itemize}
+Use a global variable (e.g., \texttt{sw1\_state}) to track the current position in the sequence. In the ISR, increment the state and use a switch-case or modulo operation to cycle through colors. Refer to Table~\ref{tab:led-colors} in Experiment 5 for LED color codes.

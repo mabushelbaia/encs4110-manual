@@ -7,7 +7,7 @@
 # Two kinds of exports, both written to $(OUT) (default: dist/), a git
 # worktree of the `pdf` branch:
 #   make manual   -> encs4110_manual.pdf   (the whole manual)
-#   make 1..9     -> encs4110_<n>.pdf      (a single experiment, standalone)
+#   make 1..10    -> encs4110_<n>.pdf      (a single experiment, standalone)
 #   make all      -> every experiment + the manual
 #
 # Commit and push the `pdf` branch (from inside dist/) to sync the
@@ -24,7 +24,7 @@ PDFLATEX ?= pdflatex
 TEX_OPTS   = -interaction=nonstopmode -shell-escape
 OUT       ?= dist
 
-EXPS := $(shell seq 1 9)
+EXPS := $(shell seq 1 10)
 .PHONY: all manual clean help $(EXPS)
 
 all: $(EXPS) manual
@@ -55,7 +55,7 @@ help:
 	@echo "Usage: make <target>   (PDFs are written to $(OUT)/)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  1-9     Build a single standalone experiment PDF"
+	@echo "  1-10    Build a single standalone experiment PDF"
 	@echo "  all     Build every experiment + the full manual"
 	@echo "  manual  Build only the full manual"
 	@echo "  clean   Remove generated PDFs and aux files"

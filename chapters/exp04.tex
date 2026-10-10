@@ -1,478 +1,450 @@
-\chapter{Microcontroller Architecture and GPIO Output}
+\chapter{Procedures and the Stack}
 
 \section*{Learning Objectives}
 After completing this experiment, you will be able to:
 \begin{itemize}[nosep]
-  \item Identify the main components and subsystems of the TM4C123 microcontroller and understand their roles within an embedded system.
-  \item Recognize the organization of the ARM Cortex-M4 core, memory map, and peripheral buses.
-  \item Understand the role of core peripherals including NVIC, SysTick, and System Control Block (SCB).
-  \item Configure and control digital output pins using the General-Purpose Input/Output (GPIO) module.
-  \item Write Assembly programs to drive on-board LEDs through direct register access.
-  \item Relate register operations to physical hardware behavior and verify functionality through observation on the LaunchPad board.
+  \item Call and return from procedures using \texttt{BL} and \texttt{BX LR}.
+  \item Apply the ARM Procedure Call Standard (AAPCS) to pass parameters, return results, and decide which registers must be preserved.
+  \item Use \texttt{PUSH} and \texttt{POP} to save and restore callee-saved registers and \texttt{LR} on the full descending stack.
+  \item Implement nested and recursive procedures that manage the stack correctly.
 \end{itemize}
 
 \section*{Experiment Overview}
-This experiment introduces the TM4C123 microcontroller architecture and digital I/O interfacing through GPIO ports. You will explore the internal structure including the ARM Cortex-M4 core, memory regions, and peripheral interconnect, then write Assembly programs to control the on-board LEDs connected to PORTF. By the end of this lab, you will understand how peripheral registers are memory-mapped, be able to initialize and configure GPIO ports, and control external hardware through register manipulation—forming the foundation for subsequent experiments with interrupts, timers, and analog peripherals.
+This experiment builds on the branching and loop patterns from Experiment 3 to write modular assembly code. You will define procedures, follow the AAPCS calling convention for arguments, return values, and register preservation, and use the stack to save the return address and working registers across nested and recursive calls. By the end of this lab, you will be able to split a program into reusable procedures that call each other safely.
 
 \newpage
-
 
 \section{Theoretical Background}
+\subsection{ARM Architecture Procedure Call Standard (AAPCS)}
 
-\subsection{TM4C123 Microcontroller Architecture}
+Procedures are reusable blocks of code that encapsulate a specific task. They promote modular design, code reuse, and clearer program structure. In ARM assembly, procedures are implemented using branch-and-link instructions along with register usage conventions defined by the ARM Architecture Procedure Call Standard (AAPCS).
 
-The TM4C123GH6PM microcontroller is built around the ARM Cortex-M4F processor core, implementing the ARMv7-M architecture. It integrates the CPU core, memory, peripherals, and I/O interfaces on a single chip — a complete system-on-chip (SoC) solution for embedded applications.
-
-\subsubsection{Core Components}
-
-The TM4C123 contains the following major components:
-\begin{itemize}[nosep]
-  \item \textbf{ARM Cortex-M4F Processor Core}: 32-bit RISC processor with hardware Floating-Point Unit (FPU)
-  \item \textbf{Memory}: 256 KB Flash, 32 KB SRAM, 2 KB EEPROM
-  \item \textbf{System Buses}: Advanced High-Performance Bus (AHB) and Advanced Peripheral Bus (APB)
-  \item \textbf{Core Peripherals}: NVIC, SysTick Timer, Memory Protection Unit (MPU), System Control Block (SCB)
-  \item \textbf{General-Purpose Timers}: Six 16/32-bit and six 32/64-bit timers
-  \item \textbf{Communication Interfaces}: UART, I\textsuperscript{2}C, SSI (SPI), CAN
-  \item \textbf{Analog Peripherals}: 12-bit ADC with 12 channels, analog comparators
-  \item \textbf{GPIO Ports}: Six ports (A-F) with up to 43 programmable pins
-\end{itemize}
-
-\subsection{ARM Cortex-M4 Core Peripherals}
-
-The ARM Cortex-M4 processor includes several \textbf{core peripherals} that are common across all Cortex-M4-based microcontrollers.  
-They are tightly integrated with the CPU and provide essential system functions such as interrupt handling and timing.
-
-\subsubsection{Nested Vectored Interrupt Controller (NVIC)}
-
-The NVIC manages all interrupt and exception handling.  
-It supports up to 240 interrupt sources (138 on the TM4C123), hardware priority levels, and automatic context saving for efficient servicing.  
-Key features include nesting, tail-chaining, and late-arrival handling for minimal interrupt latency.
-
-\noindent Important NVIC registers (base address \texttt{0xE000E100}):
-\begin{itemize}[nosep]
-  \item \texttt{NVIC\_ENx} — Set-Enable  
-  \item \texttt{NVIC\_DISx} — Clear-Enable  
-  \item \texttt{NVIC\_PRIx} — Priority Configuration  
-  \item \texttt{NVIC\_ACTIVEx} — Active Status
-\end{itemize}
-
-\subsubsection{SysTick Timer}
-
-The SysTick timer is a simple 24-bit down-counter integrated in the core.  
-It provides a consistent time base for system delays or periodic tasks.  
-Many operating systems use it for time-keeping or scheduling.
-
-\noindent SysTick registers (base address \texttt{0xE000E010}):
-\begin{itemize}[nosep]
-  \item \texttt{STCTRL} — Control and Status  
-  \item \texttt{STRELOAD} — Reload Value  
-  \item \texttt{STCURRENT} — Current Counter Value
-\end{itemize}
-
-\noindent Other core peripherals such as the System Control Block (SCB) are present but not covered in this course.
-
-\noindent This experiment's own examples and tasks use neither the NVIC nor SysTick — they're introduced here as groundwork you'll configure hands-on in Experiment 5 (NVIC-driven GPIO interrupts) and Experiment 6 (SysTick-based timing).
-\bigskip
-
-\subsection{Memory Map}
-
-The Cortex-M4 processor uses a unified 4 GB address space for all code, data, and peripherals.  
-Every peripheral and memory region occupies a unique address range, allowing direct access through normal load and store instructions.
-
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{lll}
-\toprule
-\textbf{Region} & \textbf{Address Range} & \textbf{Description} \\
-\midrule
-Flash Memory & 0x00000000 - 0x0003FFFF & Program storage (256 KB) \\
-SRAM & 0x20000000 - 0x20007FFF & On-chip data memory (32 KB) \\
-Peripherals & 0x40000000 - 0x400FFFFF & Peripheral registers \\
-GPIO Ports & 0x40004000 - 0x40025FFF & GPIO A-F registers \\
-Core Peripherals & 0xE0000000 - 0xE00FFFFF & NVIC, SysTick, SCB, etc. \\
-\bottomrule
-\end{tabular}
-\caption{Simplified TM4C123 Memory Map}
-\end{table}
-
-\noindent
-Each peripheral's registers are \textbf{memory-mapped}, meaning they are accessed just like variables in memory.  
-For example, writing to address \texttt{0x400253FC} directly updates the GPIO Port F data register.
-
-
-\subsection{General-Purpose Input/Output (GPIO)}
-
-GPIO (General-Purpose Input/Output) ports form the primary interface between the microcontroller and external devices such as LEDs, switches, and sensors. Each pin can be configured as either an input or an output.
-
-When a pin is an \textbf{output}, software drives it high or low to control external hardware (e.g., turn an LED on/off).  
-When a pin is an \textbf{input}, software reads its logic level (e.g., a button press).
-
-\subsubsection{GPIO Ports Overview}
-
-The TM4C123GH6PM provides six GPIO ports (A-F), each with up to eight programmable pins. Not all pins are available on the LaunchPad, and some are reserved for debugging or special functions.
-
-\begin{table}[H]
-\centering
-\small
-\renewcommand{\arraystretch}{1.2}
-\begin{tabular}{cll}
-\toprule
-\textbf{Port} & \textbf{Pins Available} & \textbf{Notes} \\
-\midrule
-Port A & PA0-PA7 & UART0 (PA0, PA1) shared with USB debug interface \\
-Port B & PB0-PB7 & I\textsuperscript{2}C0, SSI2, ADC channels \\
-Port C & PC0-PC7 & PC0-PC3 used for JTAG (avoid modification) \\
-Port D & PD0-PD7 & PD7 requires unlock for GPIO use \\
-Port E & PE0-PE5 & ADC and UART5 functionality available \\
-Port F & PF0-PF4 & On-board LEDs (PF1-PF3) and switches (PF0, PF4) \\
-\bottomrule
-\end{tabular}
-\caption{GPIO Port Summary — TM4C123GH6PM}
-\end{table}
-
-\noindent
-Each port exposes its own control and data registers, allowing independent configuration and operation.
-\bigskip
-
-\subsubsection{Memory-Mapped GPIO Registers}
-
-GPIO modules are accessed via \textbf{memory-mapped registers}: fixed addresses that the CPU reads/writes with standard \texttt{LDR}/\texttt{STR} instructions.
-
-\noindent
-Every port has a \textbf{base address}; key registers sit at fixed offsets from that base.
-
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{cl}
-\toprule
-\textbf{Port} & \textbf{Base Address} \\
-\midrule
-Port A & 0x40004000 \\
-Port B & 0x40005000 \\
-Port C & 0x40006000 \\
-Port D & 0x40007000 \\
-Port E & 0x40024000 \\
-Port F & 0x40025000 \\
-\bottomrule
-\end{tabular}
-\caption{GPIO Port Base Addresses (TM4C123GH6PM)}
-\end{table}
-
-\noindent
-In this experiment we use Port~F, so:
-\[
-\texttt{GPIODIR} = \texttt{0x40025400},\quad
-\texttt{GPIODEN} = \texttt{0x4002551C},\quad
-\texttt{GPIODATA} = \texttt{0x400253FC}.
-\]
-\bigskip
-
-\subsubsection{Address Masking in \texttt{GPIODATA}}
-
-The \texttt{GPIODATA} register supports \textbf{address masking}: address bits [9:2] form a bit mask that selects which pins are affected.
+The AAPCS is the set of rules that define how functions exchange data and how registers must be preserved during a procedure call:
 
 \begin{itemize}[nosep]
-  \item \textbf{Full access:} Base + \texttt{0x3FC} — all 8 pins.
-  \item \textbf{Masked access:} Base + (\texttt{mask} $\ll$ 2) — only the pins in \texttt{mask}.
+  \item \textbf{R0--R3}: Hold the first four parameters. \texttt{R0} also holds the return value. Caller-saved.
+  \item \textbf{Stack}: Any additional parameters beyond the first four are passed on the stack.
+  \item \textbf{R4--R11}: Must be preserved by the callee. If a procedure uses them, it must save and restore them.
+  \item \textbf{R12 (IP)}: Intra-procedure-call scratch register. Caller-saved — a callee may freely overwrite it, so (like R0--R3) never assume it survives a \texttt{BL}.
+  \item \textbf{SP (R13)}: Stack pointer, always points to the current top of the stack.
+  \item \textbf{LR (R14)}: Link register holds the return address. Caller-saved.
 \end{itemize}
+\paragraph{Note:} Callees are the procedures being called, while callers are the ones calling the procedure.
 
-\noindent
-Example (PF1 only):
-\[
-\texttt{0x40025000 + (0x02 << 2) = 0x40025008}.
-\]
-This is \textbf{address masking} (often confused with “bit-banding”); it enables fast, selective reads/writes to individual pins.
-\bigskip
+\subsection{Procedure Templates}
 
-\subsubsection{Protected and Special-Function Pins}
+A procedure is entered with a \texttt{BL} (branch-with-link) instruction, which stores the return address in the link register \texttt{LR}. The callee returns by branching to \texttt{LR} (e.g., \texttt{BX LR}). By the AAPCS, the first four arguments are passed in \texttt{R0--R3} and the primary return value is placed in \texttt{R0}.
+\newpage
+\paragraph{Basic Procedure Template}
 
-Some pins are locked or reserved at reset due to critical roles:
+\paragraph{Example:} simple procedure that expects two integers in \texttt{R0} and \texttt{R1} and returns their sum in \texttt{R0}.
 
-\begin{itemize}[nosep]
-  \item \textbf{PF0} doubles as the Non-Maskable Interrupt (NMI) input and is locked. To use it as GPIO, write \texttt{0x4C4F434B} to \texttt{GPIO\_LOCK} and set the desired bits in \texttt{GPIO\_CR}.
-  \item \textbf{PC0-PC3} carry the JTAG debug interface and should not be reassigned in normal operation.
-\end{itemize}
-
-\noindent
-Always confirm pin availability in the datasheet before repurposing special-function pins.
-\bigskip
-
-\subsubsection{Port F on the LaunchPad}
-
-Port~F connects to the on-board RGB LEDs and user push buttons:
-
-\begin{table}[H]
-\centering
-\small
-\renewcommand{\arraystretch}{1.2}
-\begin{tabular}{clll}
-\toprule
-\textbf{Pin} & \textbf{Function} & \textbf{Connected Component} & \textbf{Active Level} \\
-\midrule
-PF1 & Output & Red LED & Active High \\
-PF2 & Output & Blue LED & Active High \\
-PF3 & Output & Green LED & Active High \\
-PF0 & Input (locked) & SW2 (Push Button) & Active Low (enable pull-up) \\
-PF4 & Input & SW1 (Push Button) & Active Low (enable pull-up) \\
-\bottomrule
-\end{tabular}
-\caption{GPIO Port F Pin Assignments — TM4C123 LaunchPad}
-\end{table}
-
-\noindent
-LEDs are \textbf{active-high} (write 1 to turn on). Push buttons pull to ground when pressed, so inputs read \textbf{0 when pressed} and require internal pull-ups.
-\bigskip
-
-\subsubsection{GPIO Configuration Workflow}
-
-In practice, GPIO usage has two phases:
-
-\begin{itemize}[nosep]
-  \item \textbf{Initialization (setup, runs once):} enable the port clock, unlock protected pins (if needed), set direction, and enable digital function.
-  \item \textbf{Runtime (operation, repeats):} read inputs or write outputs by accessing \texttt{GPIODATA} in the main loop or in interrupt service routines (ISRs).
-\end{itemize}
-
-\noindent
-A typical structure is:
-
-\begin{lstlisting}[language=C,caption={Typical GPIO program structure (setup vs. runtime)}]
-InitGPIO();                // RCGCGPIO, optional LOCK/CR, DIR, DEN
-while (1) {                // Runtime phase
-    // Read buttons (inputs) and/or drive LEDs (outputs)
-    // Optionally, some I/O is handled inside ISRs
-}
+\begin{lstlisting}[caption={Basic procedure structure}]
+AddTwo  PROC
+        ADD R0, R0, R1   ; return R0+R1 in R0
+        BX  LR
+        ENDP
 \end{lstlisting}
+\paragraph{Note:} The \texttt{PROC} and \texttt{ENDP} directives help define the start and end of a procedure and they could be safely omitted.
+
+\paragraph{Procedure with Preserved Registers}
+
+When a procedure uses callee-saved registers (R4-R11), it must preserve their original values by saving them on the stack and restoring them before returning:
+
+\begin{lstlisting}[caption={Procedure using preserved registers}]
+ProcessArray PROC
+        PUSH    {R4-R6, LR}     ; Save used registers and LR
+        MOV     R4, R0          ; Save array pointer
+        MOV     R5, R1          ; Save array length  
+        MOV     R6, #0          ; Initialize counter
+        
+        ; Process array using R4, R5, R6...
+        
+        MOV     R0, R6          ; Return counter value
+        POP     {R4-R6, PC}     ; Restore registers and return
+        ENDP
+\end{lstlisting}
+
+\paragraph{Nested Procedure Calls}
+
+When one procedure calls another, the link register (\texttt{LR}) must be preserved, otherwise the return address would be lost. This is done by pushing \texttt{LR} onto the stack before making another call.
+
+\begin{lstlisting}[caption={Nested procedure example}]
+OuterProc
+        PUSH    {LR}            ; Save return address
+        BL      InnerProc       ; Call inner procedure
+        MOV     R1, R0          ; Use return value
+        POP     {PC}            ; Return to caller
+
+InnerProc 
+        MOV     R0, #42         ; Return value
+        BX      LR              ; Return
+\end{lstlisting}
+
+
+\subsection{Stack Model (Full, Descending)}
+There are four common stack models based on two characteristics: whether the stack is full or empty, and whether it grows up (ascending) or down (descending). 
+\begin{itemize}[nosep]
+    \item \textbf{Full Ascending}: SP points to the last used location; stack grows toward higher addresses.
+    \item \textbf{Empty Ascending}: SP points to the next free location; stack grows toward higher addresses.
+    \item \textbf{Empty Descending}: SP points to the next free location; stack grows toward lower addresses.
+    \item \textbf{Full Descending}: SP points to the last used location; stack grows toward lower addresses.
+\end{itemize}
+The ARM Cortex-M4 uses a \textbf{full descending stack}, meaning:
+\begin{itemize}[nosep]
+    \item The stack pointer (\texttt{SP}) points to the last used location (full).
+    \item The stack grows toward lower memory addresses (descending).
+\end{itemize}
+\subsection{Stack Operations}
+
+The Cortex-M4 provides \texttt{PUSH} and \texttt{POP} instructions that automatically update the stack pointer (\texttt{SP}) and allow saving or restoring multiple registers in a single instruction.  
+These operations are essential for implementing procedure calls, local variables, and context switching.
+\paragraph{PUSH}
+
+The \texttt{PUSH} instruction saves one or more registers onto the stack in a single operation.
+When executed, the stack pointer (\texttt{SP}) is decremented to reserve space, and the specified registers are written to consecutive memory locations starting from the new \texttt{SP} value.
+\textbf{Rule:} \texttt{PUSH} stores registers on the stack, with the \textbf{lowest-numbered register} placed at the \textbf{lowest memory address} and the \textbf{highest-numbered register} placed at the \textbf{highest memory address}.
+This guarantees a consistent and predictable memory layout for saved contexts.
 
 \medskip
 \noindent
-The detailed register-level steps (clock enable, unlock, direction, digital enable, and data access) are demonstrated in the following subsections.
+\textbf{Example:}
+\begin{lstlisting}
+    PUSH {R4, R0, R2, LR}
+\end{lstlisting}
 
-\newpage
-\subsubsection*{Step 1 — Enable the GPIO Port Clock}
-
-\noindent\textbf{Register:} \texttt{RCGCGPIO} — Run Mode Clock Gating Control for GPIO (\texttt{0x400FE608})
-
-\noindent
-Before accessing any GPIO port, its clock must be enabled.  
-The \texttt{RCGCGPIO} register controls the clock to all GPIO modules.  
-Each bit corresponds to a single port (A-F). Writing a '1' to a bit enables the clock to that port, while '0' disables it.
+Even if the list appears unordered, values are laid out by register number: R0 (lowest address), then R2, R4, and LR (highest address).
+Each register occupies 4 bytes, so \texttt{SP} decreases by 16 bytes in total.
+The program counter (\texttt{PC}) cannot be pushed by this instruction.
 
 \begin{figure}[H]
 \centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{~PA~}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{10}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF} & \bitbox{1}{PE} & \bitbox{1}{PD} & \bitbox{1}{PC} & \bitbox{1}{PB} & \bitbox{1}{PA}
-\end{bytefield}
-\caption{RCGCGPIO Register (\texttt{0x400FE608}) — GPIO Clock Control}
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+        % Memory addresses (descending)
+        \node[anchor=east] at (-0.1,4) {\tiny 0x20001000};
+        \node[anchor=east] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[anchor=east] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[anchor=east] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[anchor=east] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Stack pointer arrow
+        \draw[->, thick, red] (2.5,4) -- (2.1,4);
+        \node[right, red] at (2.5,4) {\textbf{SP}};
+        
+        % Title
+        \node[below] at (1,-0.3) {\small Initial Stack};
+    \end{tikzpicture}
+    \caption{Initial empty stack}
+    \label{fig:stack-initial}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+        % Memory addresses (descending)
+        \node[anchor=east] at (-0.1,4) {\tiny 0x20001000};
+        \node[anchor=east] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[anchor=east] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[anchor=east] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[anchor=east] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Old SP position (grayed out)
+        \draw[->, thin, gray] (2.5,4) -- (2.1,4);
+        \node[right, gray] at (2.5,4) {\small Old SP};
+        
+        % New SP position after PUSH {R0, R2, R4, LR}
+        \draw[->, thick, red] (2.5,0) -- (2.1,0);
+        \node[right, red] at (2.5,0) {\textbf{SP-16}};
+        
+        
+        
+        % Title
+        \node[below] at (1,-0.3) {\small SP Updated};
+    \end{tikzpicture}
+    \caption{Stack pointer decremented}
+    \label{fig:stack-sp-update}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+        % Memory addresses (descending)
+        \node[left, anchor=south west] at (-0.1,4) {\tiny 0x20001000};
+        \node[left, anchor=south west] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[left, anchor=south west] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[left, anchor=south west] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[left, anchor=south west] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Stored registers (in ascending order by number)
+        \fill[blue!20] (0,3) rectangle (2,4);
+        \node at (1,3.5) {\textbf{LR}};
+        
+        \fill[green!20] (0,2) rectangle (2,3);
+        \node at (1,2.5) {\textbf{R4}};
+        
+        \fill[yellow!30] (0,1) rectangle (2,2);
+        \node at (1,1.5) {\textbf{R2}};
+        
+        \fill[orange!20] (0,0) rectangle (2,1);
+        \node at (1,0.5) {\textbf{R0}};
+        
+        % Stack pointer pointing to last used location
+        \draw[->, thick, red] (2.5,0) -- (2.1,0);
+        \node[right, red] at (2.5,0) {\textbf{SP}};
+        
+        % Annotations
+        \node[left] at (-0.1,4) {\tiny Higher addr.};
+        \node[left] at (-0.1,0) {\tiny Lower addr.};
+        
+        % Title
+        \node[below] at (1,-0.3) {\small Values Stored};
+    \end{tikzpicture}
+    \caption{Registers stored in order}
+    \label{fig:stack-values}
+\end{subfigure}
+\caption{Stack operation sequence for \texttt{PUSH \{R4, R0, R2, LR\}}}
+\label{fig:stack-push-sequence}
 \end{figure}
 
-\noindent
-To activate Port~F, bit~5 must be set to~1 as shown below.
+\noindent\textbf{Explanation:}
+Figure~\ref{fig:stack-push-sequence}\textbf{(a)} shows the empty stack with \texttt{SP} at the top (highest address).
+When \texttt{PUSH} executes, the processor \textbf{decrements \texttt{SP} by 16 bytes} to reserve space for four registers (Figure~\ref{fig:stack-push-sequence}\textbf{(b)}).
+Finally, in Figure~\ref{fig:stack-push-sequence}\textbf{(c)}, values are stored according to the rule: the lowest-numbered register (R0) at the lowest address, then R2 and R4, and the highest-numbered (LR) at the highest address.
+Because the stack grows downward, \texttt{SP} points to the last written word after the operation.
 
-\begin{lstlisting}[caption={Enable clock for Port F}]
-        LDR     R1, =0x400FE608     ; RCGCGPIO register
-        LDR     R0, [R1]
-        ORR     R0, R0, #0x20       ; Set bit 5 (Port F)
-        STR     R0, [R1]
-\end{lstlisting}
-\noindent
-Once the clock is enabled, a short delay or status polling ensures the peripheral is ready before further configuration. This delay exists because enabling a peripheral's clock in \texttt{RCGCGPIO} doesn't take effect instantaneously — the clock-gating logic needs a few cycles to settle before the port's registers can be safely accessed. A couple of \texttt{NOP} instructions (as used in this experiment's examples) are enough to bridge that gap; the exact count isn't critical as long as some delay follows the clock-enable write. A more robust alternative — used later in this manual (see Experiment 7's LCD driver) — is to poll a peripheral-ready register (\texttt{SYSCTL->PRGPIO}) instead of guessing a fixed number of \texttt{NOP}s.
 \bigskip
+\paragraph{POP}
 
+The \texttt{POP} instruction restores one or more registers from the stack.
+Conceptually, the processor reads each value from the addresses currently covered by \texttt{SP} and then releases that stack space.
+\textbf{Rule:} \texttt{POP} loads registers from the stack such that the \textbf{lowest-numbered register} is restored from the \textbf{lowest memory address}, and the \textbf{highest-numbered register} from the \textbf{highest memory address}.
+After all specified registers are restored, \texttt{SP} has increased by 4 bytes per register.
 
-\subsubsection*{Step 2 — Unlock Protected Pins}
-\noindent\textbf{Registers:} \texttt{GPIO\_LOCK} (\texttt{0x40025520}), \texttt{GPIO\_CR} (\texttt{0x40025524})
-
+\medskip
 \noindent
-Certain pins such as PF0 are protected because they share critical alternate functions (e.g., the NMI input).  
-To modify these pins, the port must be unlocked by writing the key value \texttt{0x4C4F434B} (“LOCK”) into the \texttt{GPIO\_LOCK} register.  
-The \texttt{GPIO\_CR} register (Commit Register) then determines which pins can be altered.
+\textbf{Example:}
+\begin{lstlisting}
+    POP {R6-R8}
+\end{lstlisting}
+
+This restores R6, then R7, then R8 from successively higher addresses; the stack pointer increases by 12 bytes overall.
+If \texttt{PC} is included in the list, the loaded value becomes the new program counter, returning from the current procedure.
 
 \begin{figure}[H]
 \centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF3~}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{8}{Commit Mask}
-\end{bytefield}
-\caption{GPIO\_CR Register — Commit Control}
+
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+
+        
+        % Stored registers (in ascending order by number)
+        \fill[blue!20] (0,3) rectangle (2,4);
+        \node at (1,3.5) {\textbf{LR}};
+        
+        \fill[green!20] (0,2) rectangle (2,3);
+        \node at (1,2.5) {\textbf{R4}};
+        
+        \fill[yellow!30] (0,1) rectangle (2,2);
+        \node at (1,1.5) {\textbf{R2}};
+        
+        \fill[orange!20] (0,0) rectangle (2,1);
+        \node at (1,0.5) {\textbf{R0}};
+        
+        % Stack pointer pointing to last used location
+        \draw[->, thick, red] (2.5,0) -- (2.1,0);
+        \node[right, red] at (2.5,0) {\textbf{SP}};
+        
+        % Annotations
+        % Memory addresses (descending)
+        \node[anchor=east] at (-0.1,4) {\tiny 0x20001000};
+        \node[anchor=east] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[anchor=east] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[anchor=east] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[anchor=east] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Title
+        \node[below] at (1,-0.3) {\small Initial Stack};
+    \end{tikzpicture}
+    \caption{Initial stack after Figure \ref{fig:stack-push-sequence}}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+
+        
+        % Stored registers (in ascending order by number)
+        \fill[blue!20] (0,3) rectangle (2,4);
+        \node at (1,3.5) {\textbf{LR}};
+        
+        \fill[gray!20] (0,2) rectangle (2,3);
+        \node at (1,2.5) {\textbf{R4}};
+        
+        \fill[gray!30] (0,1) rectangle (2,2);
+        \node at (1,1.5) {\textbf{R2}};
+        
+        \fill[gray!20] (0,0) rectangle (2,1);
+        \node at (1,0.5) {\textbf{R0}};
+        
+        % Stack pointer pointing to last used location
+        \draw[->, thin, gray] (2.5,0) -- (2.1,0);
+        \node[right, gray] at (2.5,0) {\small{Old SP}}; 
+
+        \draw[->, thick, red] (2.5,3) -- (2.1,3);
+        \node[right, red] at (2.5,3) {\textbf{SP - 12}};
+        
+        % Annotations
+        % Memory addresses (descending)
+        \node[anchor=east] at (-0.1,4) {\tiny 0x20001000};
+        \node[anchor=east] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[anchor=east] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[anchor=east] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[anchor=east] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Title
+        \node[below] at (1,-0.3) {\small SP Updated};
+    \end{tikzpicture}
+    \caption{Stack pointer incremented}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.3\textwidth}
+    \centering
+    \centering
+    \begin{tikzpicture}[scale=0.8]
+        % Stack frame
+        \draw[thick] (0,0) rectangle (2,4);
+        
+        % Grid lines for 4 cells
+        \foreach \y in {1,2,3} {
+            \draw[thin, gray!50] (0,\y) -- (2,\y);
+        }
+        
+
+        
+        % Stored registers (in ascending order by number)
+        \fill[blue!20] (0,3) rectangle (2,4);
+        \node at (1,3.5) {\textbf{LR}};
+        
+        \fill[gray!20] (0,2) rectangle (2,3);
+        \node at (1,2.5) {\small{R4 $\rightarrow$ R8}};
+        
+        \fill[gray!30] (0,1) rectangle (2,2);
+        \node at (1,1.5) {\small{R2 $\rightarrow$ R7}};
+
+        \fill[gray!20] (0,0) rectangle (2,1);
+        \node at (1,0.5) {\small{R0 $\rightarrow$ R6}};
+        
+        % Stack pointer pointing to last used location
+        \draw[->, thick, red] (2.5,3) -- (2.1,3);
+        \node[right, red] at (2.5,3) {\textbf{SP}};
+        
+        % Annotations
+        % Memory addresses (descending)
+        \node[anchor=east] at (-0.1,4) {\tiny 0x20001000};
+        \node[anchor=east] at (-0.1,3) {\tiny 0x20000FFC};
+        \node[anchor=east] at (-0.1,2) {\tiny 0x20000FF8};
+        \node[anchor=east] at (-0.1,1) {\tiny 0x20000FF4};
+        \node[anchor=east] at (-0.1,0) {\tiny 0x20000FF0};
+        
+        % Title
+        \node[below] at (1,-0.3) {\small Values Restored};
+    \end{tikzpicture}
+    \caption{Registers restored in order}
+    \label{fig:stack-pop-restore}
+\end{subfigure}
+
+\caption{Stack operation sequence for \texttt{POP \{R6-R8\}}}
+\label{fig:stack-pop-sequence}
 \end{figure}
+\noindent\textbf{Explanation:}
+In Figure~\ref{fig:stack-pop-sequence}\textbf{(a)}, the stack contains values saved earlier.
+Executing \texttt{POP \{R6-R8\}} \textbf{reclaims 12 bytes of stack space} (three registers) by moving \texttt{SP} upward in memory (Figure~\ref{fig:stack-pop-sequence}\textbf{(b)}).
+Then, as shown in Figure~\ref{fig:stack-pop-sequence}\textbf{(c)}, registers are restored following the rule: the lowest-numbered register (R6) comes from the lowest address, followed by R7 and R8 from higher addresses.
+After the last load, \texttt{SP} points to the top of the reclaimed block, completing the reversal of the earlier push.
 
-\noindent
-The following code unlocks Port~F and enables modification of all pins.
-
-\begin{lstlisting}[caption={Unlock Port F}]
-        LDR     R1, =0x40025520     ; GPIO_LOCK
-        LDR     R0, =0x4C4F434B     ; Unlock key
-        STR     R0, [R1]            
-        LDR     R1, =0x40025524     ; GPIO_CR
-        MOV     R0, #0xFF           ; Allow changes to all pins
-        STR     R0, [R1]
-\end{lstlisting}
-\noindent
-In this experiment, PF0 is not used, so unlocking is optional. After unlocking, configuration registers such as direction and digital enable can be safely modified.
-\bigskip
+\paragraph{Note:} This figure deliberately reuses the stack contents from the earlier \texttt{PUSH \{R0, R2, R4, LR\}} example, relabeling them R6/R7/R8 to illustrate that \texttt{POP} restores registers by \emph{address}, not by the name they were pushed under — it is not meant to represent the same code sequence continuing.
 
 
-\subsubsection*{Step 3 — Configure Pin Direction}
-\noindent\textbf{Register:} \texttt{GPIODIR} (\texttt{0x40025400}) — GPIO Direction Control (Port~F)
 
-\noindent
-The \texttt{GPIODIR} register determines whether each GPIO pin functions as an input or an output.  
-Writing '0' configures the pin as an input, while '1' configures it as an output.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
-\end{bytefield}
-\caption{GPIODIR Register (Port F) — Direction Control}
-\end{figure}
-
-\noindent
-For the on-board RGB LED, PF1-PF3 must be configured as outputs.  
-Bits 1-3 are therefore set to '1'.
-
-\begin{lstlisting}[caption={Set PF1, PF2, PF3 as outputs}]
-        LDR     R1, =0x40025400     ; GPIODIR register (Port F)
-        LDR     R0, [R1]
-        ORR     R0, R0, #0x0E       ; Set PF1, PF2, PF3 as outputs
-        STR     R0, [R1]
-\end{lstlisting}
-\noindent
-Unmodified bits remain unchanged, allowing input pins (such as PF0 or PF4) to retain their default configuration.
-\bigskip
-
-
-\subsubsection*{Step 4 — Enable Digital Functionality}
-\noindent\textbf{Register:} \texttt{GPIODEN} (\texttt{0x4002551C}) — Digital Enable Register (Port~F)
-
-\noindent
-Each GPIO pin can serve analog or digital functions.  
-The \texttt{GPIODEN} register enables the digital circuitry for selected pins.  
-Pins configured as digital inputs or outputs must have their corresponding bits set to '1'.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
-\end{bytefield}
-\caption{GPIODEN Register (Port F) — Digital Enable}
-\end{figure}
-
-\noindent
-Bits~1-3 are set to enable PF1-PF3 as digital outputs for the LED.
-
-\begin{lstlisting}[caption={Enable digital function for PF1-PF3}]
-        LDR     R1, =0x4002551C     ; GPIODEN register (Port F)
-        LDR     R0, [R1]
-        ORR     R0, R0, #0x0E       ; Enable PF1-PF3 as digital pins
-        STR     R0, [R1]
-\end{lstlisting}
-\noindent
-Failing to enable \texttt{GPIODEN} leaves the pins electrically inactive even if their direction is set.
-\bigskip
-
-
-\subsubsection*{Step 5 — Write to the Data Register}
-\noindent\textbf{Register:} \texttt{GPIODATA} (\texttt{0x400253FC}) — Data Input/Output Register (Port~F)
-
-\noindent
-The \texttt{GPIODATA} register reflects the current logic levels on all GPIO pins.  
-Writing to a bit drives the corresponding output high ('1') or low ('0').  
-Bits 1-3 correspond to the RGB LED pins on the LaunchPad:  
-PF1 = Red, PF2 = Blue, PF3 = Green.
-
-\begin{figure}[H]
-\centering
-\begin{bytefield}[endianness=big,bitwidth=\widthof{~PF7~}]{16}
-\bitheader[lsb=16]{16-31} \\
-\bitbox{16}[bgcolor=gray!10]{\tiny{reserved}} \\
-\bitheader{0-15} \\
-\bitbox{8}[bgcolor=gray!10]{\tiny{reserved}} & \bitbox{1}{PF7} & \bitbox{1}{PF6} & \bitbox{1}{PF5} & \bitbox{1}{PF4} & \bitbox{1}{PF3} & \bitbox{1}{PF2} & \bitbox{1}{PF1} & \bitbox{1}{PF0}
-\end{bytefield}
-\caption{GPIODATA Register (Port F) — Data Output/Input}
-\end{figure}
-
-\noindent
-The example below drives PF1 (Red) and PF3 (Green) simultaneously to produce a yellow color.
-
-\begin{lstlisting}[caption={Turn on Yellow LED (Red + Green = PF1 + PF3)}]
-    LDR     R1, =0x400253FC     ; GPIODATA register (Port F)
-    MOV     R0, #0x0A           ; Set PF1 (Red) and PF3 (Green) = Yellow
-    STR     R0, [R1]
-\end{lstlisting}
-\noindent
-By writing different bit combinations, various LED colors can be generated:
-\newcommand{\ledon}[1]{\tikz\fill[#1,draw=black] (0,0) circle (0.6ex);}
-\newcommand{\ledoff}{\tikz\draw[gray!70] (0,0) circle (0.6ex);}
-
-\begin{table}[H]
-\centering
-\small
-
-\renewcommand{\arraystretch}{1.2}
-\begin{tabular}{lccccl}
-\toprule
-\textbf{Color} & \textbf{Red (PF1)} & \textbf{Blue (PF2)} & \textbf{Green (PF3)} & \textbf{Hex} & \textbf{Combination} \\
-\midrule
-Red      & \ledon{red}    & \ledoff & \ledoff & 0x02 & Red only \\
-Blue     & \ledoff        & \ledon{blue} & \ledoff & 0x04 & Blue only \\
-Green    & \ledoff        & \ledoff & \ledon{green!70!black} & 0x08 & Green only \\
-Yellow   & \ledon{red}    & \ledoff & \ledon{green!70!black} & 0x0A & Red + Green \\
-Cyan     & \ledoff        & \ledon{blue} & \ledon{green!70!black} & 0x0C & Blue + Green \\
-Magenta  & \ledon{red}    & \ledon{blue} & \ledoff & 0x06 & Red + Blue \\
-White    & \ledon{red}    & \ledon{blue} & \ledon{green!70!black} & 0x0E & All on \\
-\bottomrule
-\end{tabular}
-\caption{LED Color Combinations on TM4C123 LaunchPad (PF1-PF3)}
-\label{tab:led-colors}
-\end{table}
 \newpage
 \section{Procedure}
+
 \subsection{Examples}
-The following examples illustrate the complete process of initializing Port~F and controlling the on-board LEDs using Assembly language.
-\subsubsection{Example 1 — Simple LED Blink}
-This example initializes Port~F and toggles the Red LED (PF1) on and off using address masking with a software delay.
-Address Masking for PF1:
 
-\[
-\texttt{0x40025000 + (0x02 << 2) = 0x40025008}
-\]
-\Needspace{50\baselineskip} % reserve space for the block; else start a new page
-\lstinputlisting[caption={Assembly code to blink the Red LED (PF1) on the TM4C123 LaunchPad}]{snippets/gpio/example1.asm}
+\subsubsection{Example 1: Nested Uppercase Counter}
+This example demonstrates a nested call: \texttt{CountUpperNested(ptr)} scans a null-terminated string and calls \texttt{IsUpper(ch)} for each character. It shows saving/restoring \texttt{LR} and using callee-saved registers (\texttt{R4} for the running count, \texttt{R5} for the scan pointer). Both values must survive the \texttt{BL IsUpper} call, so under the AAPCS they cannot be kept in caller-saved registers like R0--R3. Compare it with Example 2 of Experiment 3, which counts the same letters inline with no procedures.
+\lstinputlisting[caption={Nested procedure call to count uppercase letters}]{snippets/assembly/exp4/example1.asm}
+\paragraph{Check:} Verify that \texttt{UPPERCOUNT} contains \texttt{5} for the test string.
 
-\subsubsection{Example 2 — Cycle Through RGB Colors}
-This example extends the previous one by cycling through RGB LED colors (Red, Green, Blue) using a software delay.
-Address Masking for PF1, PF2, PF3:
-\[
-\texttt{0x40025000 + ((0x02 | 0x04 | 0x08) << 2) = 0x40025038}
-\]
-\Needspace{55\baselineskip} % reserve space for the block; else start a new page
-\lstinputlisting[caption={Assembly code to cycle through RGB colors on the TM4C123 LaunchPad}]{snippets/gpio/example2.asm}
+\newpage
+\subsubsection{Example 2: Integer to Decimal String with the Stack}
+\texttt{UIntToStr(value, buf)} converts an unsigned integer into a null-terminated decimal ASCII string and returns the number of digits in R0. It finds each digit by dividing by 10 (\texttt{UDIV}, then \texttt{MLS} for the remainder), and this produces the digits in reverse order, least-significant first. Pushing each digit and then popping them all back reverses that order again, because the stack is last-in, first-out. Each \texttt{PUSH \{R12\}} takes a full 4-byte word even though it holds only one character. Because every push is matched by a pop, \texttt{SP} returns to its starting value before the final \texttt{POP \{R4, PC\}}.
+\lstinputlisting[caption={Converting an integer to a decimal string using PUSH and POP}]{snippets/assembly/exp4/example2.asm}
+\paragraph{Check:} Verify that R0 = 5 after the call, and open a Memory window at \texttt{NUMSTR} to confirm the bytes \texttt{34 30 32 31 33 00} (\texttt{"40213"}). Single-step the first loop with the Registers window open and watch \texttt{SP} drop by 4 for each digit. Then confirm that it climbs back during the second loop. Try the value 0 as well; the result should be \texttt{"0"}.
+
+\newpage
 \subsection{Tasks}
 
-\subsubsection{Task 1 — Adjust the Blink Rate}
-Modify the delay routine in \textbf{Example 1} to change the blinking speed of the Red LED.  
-Experiment with different delay values until the LED blinks at approximately \textbf{1 Hz} (about one second ON and one second OFF).
+\subsubsection{Task 1: Count Vowels with Procedures}
+Rewrite Task 1 of Experiment 3 as procedures:
+\begin{itemize}[nosep]
+    \item Create a procedure \texttt{IsVowel} that takes a character in R0 and returns 1 in R0 if it is a vowel (a, e, i, o, u, upper- or lowercase), and 0 otherwise.
+    \item Create a procedure \texttt{CountVowels} that takes a string pointer in R0 and returns the number of vowels in R0, calling \texttt{IsVowel} for each character.
+    \item Follow AAPCS conventions for parameter passing and register usage.
+    \item Test it with the Experiment 3 string; the result must match your earlier answer.
+\end{itemize}
 
-\medskip
+\subsubsection{Task 2: Factorial Calculation (Recursive)}
+\paragraph{Note on recursion:} Example 1's nested call has one procedure calling a \emph{different} one. In recursion, \texttt{FactorialRec} calls \emph{itself}. Each call needs its own copy of \texttt{LR} (and of any register it modifies) preserved across the inner call. So every invocation must \texttt{PUSH} its own \texttt{LR}, and usually the current \texttt{n} or partial result, before recursing, then \texttt{POP} them back on the way out. Because each active call keeps its own saved values on the stack, the recursion unwinds in reverse order as each \texttt{POP}/\texttt{BX LR} returns to its caller.
 
-\subsubsection{Task 2 — Cycle Through Multiple Colors}
-Expand \textbf{Example 2} to include additional colors by combining the Red, Green, and Blue LEDs.  
-Create a program that automatically cycles through all color combinations listed in Table~\ref{tab:led-colors}. \\
-
-\smallskip
-
-\noindent\textit{Hint:} Use a loop to step through the color sequence repeatedly instead of writing separate code for each color.
+Implement a recursive procedure to calculate the factorial of a non-negative integer:
+\begin{itemize}[nosep]
+    \item Create a procedure \texttt{FactorialRec} that takes a non-negative integer in R0 and returns its factorial in R0.
+    \item Use recursion to compute the factorial, with a base case that handles $0! = 1$.
+    \item Manage the stack appropriately to save and restore registers as needed.
+    \item Follow AAPCS conventions for parameter passing and register usage.
+    \item Test the procedure with several inputs (including 0 and 1) to verify correctness.
+\end{itemize}
