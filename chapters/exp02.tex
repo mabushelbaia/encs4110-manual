@@ -224,7 +224,7 @@ XVAL    DCD     0x12345678        ; word in memory
 YPTR    DCD     YVAL              ; contains the address of YVAL
 
         AREA    MYDATA, DATA, READWRITE
-YVAL    DCD     0
+YVAL    SPACE   4
 
         END
 \end{lstlisting}
@@ -242,17 +242,19 @@ These are typically placed within a \texttt{DATA} area to create arrays, lookup 
     \item \texttt{DCW} — Define Constant Halfword (16 bits per element)
     \item \texttt{DCB} — Define Constant Byte (8 bits per element)
     \item \texttt{SPACE} — Reserve uninitialized memory (in bytes)
-    \item \texttt{FILL} — Fill memory with a specified value for a given length
+    \item \texttt{FILL} — Fill memory with a specified value for a given length (\texttt{FILL} \emph{bytes}, \emph{value}, \emph{value size})
 \end{itemize}
+
+\noindent Initial values given by \texttt{DCD}, \texttt{DCB}, and \texttt{FILL} only take effect in \texttt{READONLY} areas. As explained in Experiment~1, \texttt{READWRITE} memory is not initialized in these projects, so reserve it with \texttt{SPACE} and write it before reading it.
 
 \begin{lstlisting}[caption={Declaring arrays and strings in memory}]
             AREA    CONSTANTS, DATA, READONLY
 NUMBERS     DCD     10, 20, 30, 40        ; array of 32-bit integers
 BYTES       DCB     1, 2, 3, 4            ; array of bytes
 TEXT        DCB     "HELLO",0             ; null-terminated ASCII string
+PATTERN     FILL    64, 0xFF, 1           ; 64 bytes, each 0xFF
             AREA    MYDATA, DATA, READWRITE
 BUFFER      SPACE   64                    ; reserve 64 bytes (uninitialized)
-PATTERN     FILL    0xFF, 64              ; fill 64 bytes with 0xFF
 \end{lstlisting}
 
 Each label (e.g., \texttt{NUMBERS}, \texttt{TEXT}) marks the starting address of a data object in memory.  
@@ -272,7 +274,7 @@ Executing \texttt{LDR Rn, YPTR} loads the 32-bit contents stored at \texttt{YPTR
 \hline
 0x2000 & XVAL & 0x12345678 \\
 0x2004 & YPTR & 0x2008 (address of YVAL) \\
-0x2008 & YVAL & 0x00000000 \\
+0x2008 & YVAL & (uninitialized) \\
 \hline
 \end{tabular}
 \end{center}
@@ -377,8 +379,8 @@ TEMP_F  DCD     70              ; input temperature in Fahrenheit
 TEMP_C  DCD     22              ; input temperature in Celsius
 
         AREA    MYDATA, DATA, READWRITE
-OUT_C   DCD     0               ; TEMP_F converted to Celsius
-OUT_F   DCD     0               ; TEMP_C converted to Fahrenheit
+OUT_C   SPACE   4               ; TEMP_F converted to Celsius
+OUT_F   SPACE   4               ; TEMP_C converted to Fahrenheit
 \end{lstlisting}
 \begin{itemize}[nosep]
     \item Load both inputs from memory into registers.

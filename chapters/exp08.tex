@@ -402,4 +402,7 @@ Write a program that displays your name on line 1 and your student ID on line 2,
   \item Use a timer interrupt to handle the scrolling at a fixed interval (e.g., every 500 ms)
 \end{itemize}
 
+\paragraph{Hint:}
+The display-shift commands from Task 2 (\texttt{0x18}/\texttt{0x1C}) move \emph{both} lines together, so they cannot scroll the two lines in opposite directions. Instead, keep each line's text in a 16-character buffer padded with spaces. On every timer tick, rotate line 1's buffer one position right and line 2's buffer one position left, then rewrite both lines with \texttt{LCD\_SetCursor()} and \texttt{LCD\_Print()}.
+
   

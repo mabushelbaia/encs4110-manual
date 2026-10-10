@@ -203,7 +203,7 @@ for_start
         CMP     R0, #length             ; compare i with length
         BGE     for_end                 ; if i >= length, exit loop
 
-        ; Loop body: scaled register-offset addressing — effective address
+        ; Loop body: scaled register-offset addressing: effective address
         ; is Rn + (Rm shifted), here R3 + (R0 * 4); this is a distinct
         ; addressing mode from the plain register-offset form covered in
         ; Experiment 2's addressing-modes table

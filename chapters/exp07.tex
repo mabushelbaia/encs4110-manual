@@ -709,8 +709,8 @@ This example configures TIMER1 in 16-bit periodic mode with maximum prescaler to
   \item \texttt{SYSCTL->RCGCTIMER |= (1<<1);} enables clock to TIMER1.
   \item \texttt{TIMER1->CFG = 0x4;} selects 16-bit mode.
   \item \texttt{TIMER1->TAMR = 0x02;} configures periodic mode (count down).
-  \item \texttt{TIMER1->TAPR = 256 - 1;} sets prescaler to maximum (divisor = 256).
-  \item \texttt{TIMER1->TAILR = 65536 - 1;} writes 65535 (\texttt{0xFFFF}, the 16-bit maximum).
+  \item \texttt{TIMER1->TAPR = (1 << 8) - 1;} sets the prescaler to its maximum (255, divisor = 256).
+  \item \texttt{TIMER1->TAILR = (1 << 16) - 1;} writes 65535 (\texttt{0xFFFF}, the 16-bit maximum).
   \item Period: $T = \frac{65536 \times 256}{50{,}000{,}000} \approx 0.335$ seconds.
   \item \texttt{NVIC->ISER[0] |= (1<<21);} enables TIMER1A interrupt (IRQ 21).
   \item \texttt{TIMER1A\_Handler()} toggles the blue LED and clears the interrupt flag.

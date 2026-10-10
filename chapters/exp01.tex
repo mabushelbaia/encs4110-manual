@@ -104,7 +104,7 @@ __Vectors
         ; -------------------- Read-Write Data --------------------
         AREA    M_DATA, DATA, READWRITE   ; Variables go here (RAM)
         EXPORT  COUNT                     ; Export if referenced by other modules
-COUNT   DCD     0                         ; Initialized RW variable (word)
+COUNT   SPACE   4                         ; RW variable (word), not initialized
 BUF     SPACE   16                        ; Uninitialized RW buffer (16 bytes)
         ALIGN        
         ; -------------------- Application Code -------------------
@@ -114,6 +114,8 @@ BUF     SPACE   16                        ; Uninitialized RW buffer (16 bytes)
 Reset_Handler
         ; Example: COUNT++ and store to BUF[0]
         LDR     R0, =COUNT                ; R0 <- &COUNT
+        MOV     R1, #0                    ; RAM starts with unknown contents,
+        STR     R1, [R0]                  ; so set COUNT = 0 before using it
         LDR     R1, [R0]                  ; R1 <- COUNT
         ADDS    R1, R1, #1                ; R1 = R1 + 1 (update flags)
         STR     R1, [R0]                  ; COUNT <- R1        
@@ -141,7 +143,7 @@ STOP    B       STOP                      ; Stay here forever
     \item The first two words in \texttt{\_\_Vectors} must be the initial stack pointer value and the address of \texttt{Reset\_Handler}.
     \item The assembler/linker places sections in appropriate memory regions based on the target device and linker script.
     \item Labels must start at the beginning of the line (no indentation), while instructions and directives should be indented for proper assembly.
-    \item In the Keil simulator, a \texttt{SPACE}-reserved buffer such as \texttt{BUF} above reads back as zero before it is written. Data declared with \texttt{DCD} (like \texttt{COUNT}) is given its initial value directly. On real hardware, initialized \texttt{READWRITE} data must instead be copied from flash to RAM by startup code (driven by a scatter file) before \texttt{Reset\_Handler} runs — but no such startup/copy step is used or shown in this lab's simulator-only projects.
+    \item \texttt{READWRITE} data is \textbf{not initialized} in this lab's projects. Initial values for RAM have to be copied from flash by startup code before \texttt{Reset\_Handler} runs, and these projects have no such copy step. So a \texttt{DCD}/\texttt{DCB} value in a \texttt{READWRITE} area is \emph{not} what RAM holds at run time; reserve RAM with \texttt{SPACE} and always write a variable before reading it (as \texttt{Reset\_Handler} does with \texttt{COUNT} above). Constants, strings, and lookup tables with fixed values belong in a \texttt{READONLY} area, where their initial values are part of the program image.
 \end{itemize}
 
 \newpage
